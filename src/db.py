@@ -36,6 +36,13 @@ CREATE TABLE IF NOT EXISTS signals (
     fear_greed REAL,
     decision TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS positions (
+    symbol TEXT PRIMARY KEY,
+    side TEXT NOT NULL,
+    qty REAL NOT NULL,
+    avg_price REAL NOT NULL,
+    ts TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sentiment_cache (
     key TEXT PRIMARY KEY,
     payload TEXT NOT NULL,
@@ -89,6 +96,26 @@ class Database:
                 " VALUES (?,?,?,?,?,?,?)",
                 (self._now(), symbol, score, momentum, sentiment, fear_greed, decision),
             )
+
+    def save_positions(self, positions: dict) -> None:
+        """Persiste toutes les positions ouvertes (écrase les anciennes)."""
+        with self._conn() as c:
+            c.execute("DELETE FROM positions")
+            for symbol, pos in positions.items():
+                if pos.qty > 0:
+                    c.execute(
+                        "INSERT OR REPLACE INTO positions (symbol, side, qty, avg_price, ts)"
+                        " VALUES (?,?,?,?,?)",
+                        (symbol, pos.side, pos.qty, pos.avg_price, self._now()),
+                    )
+
+    def load_positions(self) -> list[tuple]:
+        """Recharge les positions persistées. Retourne [(symbol, side, qty, avg_price)]. """
+        with self._conn() as c:
+            cur = c.execute(
+                "SELECT symbol, side, qty, avg_price FROM positions WHERE qty > 0"
+            )
+            return cur.fetchall()
 
     def fetch_trades(self, limit: int = 100) -> list[tuple]:
         with self._conn() as c:

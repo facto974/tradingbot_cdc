@@ -18,7 +18,7 @@ SCORE = Gauge("gmcp_strategy_score", "Score composite stratégie", ["symbol"])
 # ---- Sentiment ----
 FEAR_GREED = Gauge("gmcp_fear_greed_index", "Fear & Greed Index (0-100)")
 REDDIT_SENT = Gauge("gmcp_reddit_sentiment", "Score sentiment Reddit", ["symbol"])
-STOCKTWITS_RATIO = Gauge("gmcp_stocktwits_ratio", "StockTwits bull/bear ratio", ["symbol"])
+FUTURES_LS_RATIO = Gauge("gmcp_futures_ls_ratio", "Binance Futures Long/Short ratio", ["symbol"])
 COMPOSITE_SENT = Gauge("gmcp_composite_sentiment", "Sentiment composite", ["symbol"])
 
 # ---- Activité ----

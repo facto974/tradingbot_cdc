@@ -29,7 +29,7 @@ def test_strategy_signal():
     df = pd.DataFrame({"Open": close, "High": close, "Low": close, "Close": close,
                        "Volume": 1.0}, index=idx)
     strat = MomentumSentimentStrategy(StrategyConfig())
-    sig = strat.evaluate(df, reddit=0.5, stocktwits=0.3, coingecko=0.2, fear_greed=0.4)
+    sig = strat.evaluate(df, reddit=0.5, futures_ls=0.3, coingecko=0.2, fear_greed=0.4)
     assert sig.decision in {"LONG", "FLAT", "SHORT"}
     assert -1.0 <= sig.score <= 1.0
     print(f"OK strategy signal: score={sig.score:.3f} decision={sig.decision}")

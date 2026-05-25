@@ -73,7 +73,7 @@ def build_server() -> Server:
                                  ["CryptoCurrency"])
             snap = agg.snapshot(arguments["symbol"])
             payload = {"symbol": snap.symbol, "price": snap.price,
-                       "reddit": snap.reddit, "stocktwits": snap.stocktwits,
+                       "reddit": snap.reddit, "futures_ls": snap.futures_ls,
                        "coingecko_social": snap.coingecko_social,
                        "fear_greed": snap.fear_greed}
             return [TextContent(type="text", text=json.dumps(payload, indent=2))]
@@ -82,7 +82,7 @@ def build_server() -> Server:
             agent = _agent()
             agg = agent.aggregator
             snap = agg.snapshot(arguments["symbol"])
-            sig = agent.strategy.evaluate(snap.ohlcv, snap.reddit, snap.stocktwits,
+            sig = agent.strategy.evaluate(snap.ohlcv, snap.reddit, snap.futures_ls,
                                           snap.coingecko_social, snap.fear_greed)
             return [TextContent(type="text", text=json.dumps(sig.__dict__, indent=2))]
 

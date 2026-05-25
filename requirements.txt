@@ -11,6 +11,7 @@ openai==1.55.3
 mcp==1.1.2
 rich==13.9.4
 click==8.1.7
+python-telegram-bot==22.7
 python-dateutil
 pytz
 

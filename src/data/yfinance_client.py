@@ -54,6 +54,16 @@ CCXT_INTERVAL_MAP = {
     "1day": "1d",
 }
 
+# Headers pour eviter les erreurs 406 sur Gemini
+_GEMINI_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+}
+
 
 def _fetch_from_gemini(symbol: str, start_ts: int, end_ts: int, interval: str) -> pd.DataFrame:
     """Internal helper to query Gemini API."""
@@ -63,7 +73,7 @@ def _fetch_from_gemini(symbol: str, start_ts: int, end_ts: int, interval: str) -
     url = f"https://api.gemini.com/v2/candles/{gemini_symbol}/{gemini_interval}"
     params = {"since": start_ts, "until": end_ts, "limit": 1000}
     try:
-        resp = requests.get(url, params=params, timeout=10)
+        resp = requests.get(url, headers=_GEMINI_HEADERS, params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         if not data:
