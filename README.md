@@ -1,8 +1,8 @@
 # TradingBotCDC-Trader
 
-Trading agentique automatisé sur **Gemini Exchange** via le **Model Context Protocol (MCP)**, avec stratégie hybride **momentum + sentiment social**, backtesting vectorisé, paper-trading sandbox, et stack d'observabilité **Prometheus + Grafana** prête à l'emploi.
+Trading agentique automatisé sur **CryptoCom Exchange** via le **Model Context Protocol (MCP)**, avec stratégie hybride **momentum + sentiment social**, backtesting vectorisé, paper-trading sandbox, et stack d'observabilité **Prometheus + Grafana** prête à l'emploi.
 
-> Stack 100% gratuite : seuls les frais réels de trading Gemini s'appliquent en mode live.
+> Stack 100% gratuite : seuls les frais réels de trading CryptoCom s'appliquent en mode live.
 
 ---
 
@@ -19,7 +19,7 @@ Trading agentique automatisé sur **Gemini Exchange** via le **Model Context Pro
    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
    │  DATA LAYER  │  │  SENTIMENT   │  │  EXECUTION   │
    │              │  │              │  │              │
-   │ • yfinance   │  │ • Reddit PRAW│  │  Gemini MCP  │
+   │ • yfinance   │  │ • Reddit PRAW│  │  CryptoCom MCP  │
    │ • Finnhub    │  │ • Fear&Greed │  │   ├─ sandbox │
    │ • CoinGecko  │  │ • StockTwits │  │   └─ live    │
    └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
@@ -43,8 +43,8 @@ Trading agentique automatisé sur **Gemini Exchange** via le **Model Context Pro
 |-------|-------|--------|
 | 1 — Développement | VSCode + Cline + OpenRouter | ✔ supporté |
 | 2 — Backtesting   | yfinance / CoinGecko (historique) | ✔ `run_backtest.py` |
-| 3 — Paper trading | Gemini Sandbox (`api.sandbox.gemini.com`) | ✔ `run_paper.py` |
-| 4 — Live          | Gemini réel | ✔ basculer `sandbox: false` |
+| 3 — Paper trading | CryptoCom Sandbox (`api.sandbox.cryptocom.com`) | ✔ `run_paper.py` |
+| 4 — Live          | CryptoCom réel | ✔ basculer `sandbox: false` |
 
 ---
 
@@ -53,7 +53,7 @@ Trading agentique automatisé sur **Gemini Exchange** via le **Model Context Pro
 - Python 3.10+
 - Docker & docker-compose (pour Grafana/Prometheus)
 - Comptes/clés (toutes free tier) :
-  - **Gemini API** sandbox → https://exchange.sandbox.gemini.com/
+  - **CryptoCom API** sandbox → https://exchange.sandbox.cryptocom.com/
   - **OpenRouter** → https://openrouter.ai/keys (modèles free)
   - **Finnhub** (optionnel) → https://finnhub.io
   - **Reddit PRAW** (optionnel) → https://www.reddit.com/prefs/apps
@@ -63,8 +63,8 @@ Trading agentique automatisé sur **Gemini Exchange** via le **Model Context Pro
 ## Installation
 
 ```bash
-git clone <ce-repo> gemini_trading_agent
-cd gemini_trading_agent
+git clone <ce-repo> cryptocom_trading_agent
+cd cryptocom_trading_agent
 python -m venv venv && source venv/bin/activate     # Linux/Mac
 # venv\Scripts\activate                              # Windows
 pip install -r requirements.txt
@@ -109,7 +109,7 @@ L'agent boucle toutes les `loop_interval` secondes (défaut 60 s) :
 1. fetch OHLCV + sentiment
 2. calcule signal hybride momentum/sentiment
 3. demande validation au LLM (OpenRouter free tier)
-4. envoie ordres via REST Gemini sandbox
+4. envoie ordres via REST CryptoCom sandbox
 5. persiste trades + équité dans SQLite et publie métriques
 
 ---
@@ -133,7 +133,7 @@ Compatible Claude Desktop / Cline / Cursor via `stdio`. Configuration MCP type :
 ```json
 {
   "mcpServers": {
-    "gemini-trader": {
+    "cryptocom-trader": {
       "command": "python",
       "args": ["/chemin/absolu/run_mcp.py"]
     }
@@ -147,7 +147,7 @@ Compatible Claude Desktop / Cline / Cursor via `stdio`. Configuration MCP type :
 
 1. Vérifiez que la stratégie est rentable en backtest **et** paper trading sur ≥ 30 jours.
 2. Dans `config.yaml` : `sandbox: false`.
-3. Mettez vos vraies clés `GEMINI_API_KEY` / `GEMINI_API_SECRET` dans `.env`.
+3. Mettez vos vraies clés `CRYPTOCOM_API_KEY` / `CRYPTOCOM_API_SECRET` dans `.env`.
 4. Démarrez avec un `max_position_usd` réduit (ex : 50 $).
 
 > ⚠ Aucune garantie de profit. Trader implique un risque de perte en capital.

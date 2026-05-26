@@ -1,4 +1,4 @@
-"""Tests unitaires pour GeminiClient – toutes les méthodes sont mockées pour éviter les appels réels."""
+"""Tests unitaires pour CryptoComClient – toutes les méthodes sont mockées pour éviter les appels réels."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch, ANY
 import httpx
 import pytest
 
-from src.broker.gemini_client import GeminiClient, GeminiAPIError, SANDBOX_URL, LIVE_URL
+from src.broker.cryptocom_client import CryptoComClient, CryptoComAPIError, SANDBOX_URL, LIVE_URL
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -34,9 +34,9 @@ def mock_httpx(monkeypatch):
 
 
 @pytest.fixture
-def client(mock_httpx) -> GeminiClient:
-    """Client Gemini en mode sandbox pour les tests."""
-    return GeminiClient(
+def client(mock_httpx) -> CryptoComClient:
+    """Client CryptoCom en mode sandbox pour les tests."""
+    return CryptoComClient(
         api_key="test_key",
         api_secret="test_secret",
         sandbox=True,
@@ -47,23 +47,23 @@ def client(mock_httpx) -> GeminiClient:
 
 class TestInit:
     def test_sandbox_url(self):
-        c = GeminiClient("key", "secret", sandbox=True)
+        c = CryptoComClient("key", "secret", sandbox=True)
         assert c.base == SANDBOX_URL
 
     def test_live_url(self):
-        c = GeminiClient("key", "secret", sandbox=False)
+        c = CryptoComClient("key", "secret", sandbox=False)
         assert c.base == LIVE_URL
 
     def test_secret_encoded(self):
-        c = GeminiClient("key", "secret", sandbox=True)
+        c = CryptoComClient("key", "secret", sandbox=True)
         assert isinstance(c.api_secret, bytes)
 
     def test_timeout_default(self):
-        c = GeminiClient("key", "secret", sandbox=True)
+        c = CryptoComClient("key", "secret", sandbox=True)
         assert c.timeout == 10.0
 
     def test_timeout_custom(self):
-        c = GeminiClient("key", "secret", sandbox=True, timeout=30.0)
+        c = CryptoComClient("key", "secret", sandbox=True, timeout=30.0)
         assert c.timeout == 30.0
 
 
@@ -94,7 +94,7 @@ class TestTicker:
 
 class TestPrivate:
     def test_raises_without_credentials(self):
-        c = GeminiClient("", "", sandbox=True)
+        c = CryptoComClient("", "", sandbox=True)
         with pytest.raises(RuntimeError, match="not configured"):
             c._private("/test", {})
 
@@ -102,7 +102,7 @@ class TestPrivate:
         client._private("/v1/test", {"foo": "bar"})
         call_kwargs = mock_httpx.post.call_args[1]
         headers = call_kwargs["headers"]
-        assert headers["X-GEMINI-APIKEY"] == "test_key"
+        assert headers["X-CRYPTOCOM-APIKEY"] == "test_key"
 
     def test_headers_contain_payload(self, client, mock_httpx):
         client._private("/v1/test", {"foo": "bar"})
@@ -110,7 +110,7 @@ class TestPrivate:
         headers = call_kwargs["headers"]
 
         # Décoder le payload et vérifier son contenu
-        payload_b64 = headers["X-GEMINI-PAYLOAD"]
+        payload_b64 = headers["X-CRYPTOCOM-PAYLOAD"]
         decoded = json.loads(base64.b64decode(payload_b64).decode())
         assert decoded["request"] == "/v1/test"
         assert decoded["foo"] == "bar"
@@ -120,9 +120,9 @@ class TestPrivate:
         client._private("/v1/test", {})
         call_kwargs = mock_httpx.post.call_args[1]
         headers = call_kwargs["headers"]
-        assert "X-GEMINI-SIGNATURE" in headers
+        assert "X-CRYPTOCOM-SIGNATURE" in headers
         # La signature doit être un hex de 96 caractères (SHA384)
-        assert len(headers["X-GEMINI-SIGNATURE"]) == 96
+        assert len(headers["X-CRYPTOCOM-SIGNATURE"]) == 96
 
     def test_headers_content_type(self, client, mock_httpx):
         client._private("/v1/test", {})
@@ -141,13 +141,13 @@ class TestPrivate:
         headers = call_kwargs["headers"]
 
         # Recalculer la signature attendue
-        payload_b64 = headers["X-GEMINI-PAYLOAD"]
+        payload_b64 = headers["X-CRYPTOCOM-PAYLOAD"]
         expected_sig = hmac.new(
             b"test_secret",
             payload_b64.encode(),
             hashlib.sha384,
         ).hexdigest()
-        assert headers["X-GEMINI-SIGNATURE"] == expected_sig
+        assert headers["X-CRYPTOCOM-SIGNATURE"] == expected_sig
 
     def test_nonce_increases(self, client, mock_httpx):
         """Les nonces doivent être croissants (test avec 2 appels successifs)."""
@@ -157,8 +157,8 @@ class TestPrivate:
         client._private("/v1/test2", {})
         call2_headers = mock_httpx.post.call_args[1]["headers"]
 
-        payload1 = json.loads(base64.b64decode(call1_headers["X-GEMINI-PAYLOAD"]).decode())
-        payload2 = json.loads(base64.b64decode(call2_headers["X-GEMINI-PAYLOAD"]).decode())
+        payload1 = json.loads(base64.b64decode(call1_headers["X-CRYPTOCOM-PAYLOAD"]).decode())
+        payload2 = json.loads(base64.b64decode(call2_headers["X-CRYPTOCOM-PAYLOAD"]).decode())
 
         assert int(payload2["nonce"]) > int(payload1["nonce"])
 
@@ -202,7 +202,7 @@ class TestPlaceOrder:
             order_type="exchange limit",
         )
         call_kwargs = mock_httpx.post.call_args[1]
-        payload_b64 = call_kwargs["headers"]["X-GEMINI-PAYLOAD"]
+        payload_b64 = call_kwargs["headers"]["X-CRYPTOCOM-PAYLOAD"]
         payload = json.loads(base64.b64decode(payload_b64).decode())
         assert payload["symbol"] == "btcusd"
         assert payload["side"] == "buy"
@@ -218,7 +218,7 @@ class TestPlaceOrder:
             order_type="exchange market",
         )
         call_kwargs = mock_httpx.post.call_args[1]
-        payload_b64 = call_kwargs["headers"]["X-GEMINI-PAYLOAD"]
+        payload_b64 = call_kwargs["headers"]["X-CRYPTOCOM-PAYLOAD"]
         payload = json.loads(base64.b64decode(payload_b64).decode())
         assert payload["symbol"] == "btcusd"
         assert payload["type"] == "exchange market"
@@ -234,7 +234,7 @@ class TestPlaceOrder:
             order_type="exchange market",
         )
         call_kwargs = mock_httpx.post.call_args[1]
-        payload_b64 = call_kwargs["headers"]["X-GEMINI-PAYLOAD"]
+        payload_b64 = call_kwargs["headers"]["X-CRYPTOCOM-PAYLOAD"]
         payload = json.loads(base64.b64decode(payload_b64).decode())
         assert "price" not in payload
 
@@ -248,7 +248,7 @@ class TestPlaceOrder:
             client_order_id="my-custom-id",
         )
         call_kwargs = mock_httpx.post.call_args[1]
-        payload_b64 = call_kwargs["headers"]["X-GEMINI-PAYLOAD"]
+        payload_b64 = call_kwargs["headers"]["X-CRYPTOCOM-PAYLOAD"]
         payload = json.loads(base64.b64decode(payload_b64).decode())
         assert payload["client_order_id"] == "my-custom-id"
 
@@ -256,13 +256,13 @@ class TestPlaceOrder:
         """Vérifie que ETH-USD est converti en ethusd."""
         client.place_order("ETH-USD", "buy", 1.0, order_type="exchange market")
         call_kwargs = mock_httpx.post.call_args[1]
-        payload_b64 = call_kwargs["headers"]["X-GEMINI-PAYLOAD"]
+        payload_b64 = call_kwargs["headers"]["X-CRYPTOCOM-PAYLOAD"]
         payload = json.loads(base64.b64decode(payload_b64).decode())
         assert payload["symbol"] == "ethusd"
 
     def test_live_url_for_live_mode(self, mock_httpx):
-        """En mode live, l'URL doit être api.gemini.com."""
-        c = GeminiClient("key", "secret", sandbox=False)
+        """En mode live, l'URL doit être api.cryptocom.com."""
+        c = CryptoComClient("key", "secret", sandbox=False)
         c.place_order("BTC-USD", "buy", 0.01, order_type="exchange market")
         call_args = mock_httpx.post.call_args[0]
         assert LIVE_URL in call_args[0]
@@ -275,7 +275,7 @@ class TestCancelOrder:
     def test_cancel_order_sends_order_id(self, client, mock_httpx):
         client.cancel_order("order-123")
         call_kwargs = mock_httpx.post.call_args[1]
-        payload_b64 = call_kwargs["headers"]["X-GEMINI-PAYLOAD"]
+        payload_b64 = call_kwargs["headers"]["X-CRYPTOCOM-PAYLOAD"]
         payload = json.loads(base64.b64decode(payload_b64).decode())
         assert payload["order_id"] == "order-123"
         assert payload["request"] == "/v1/order/cancel"
@@ -298,11 +298,11 @@ class TestActiveOrders:
         assert call_args[0] == f"{SANDBOX_URL}/v1/orders"
 
 
-# ── Tests de GeminiAPIError ──────────────────────────────────────────────
+# ── Tests de CryptoComAPIError ──────────────────────────────────────────────
 
-class TestGeminiAPIError:
+class TestCryptoComAPIError:
     def test_error_message_with_reason(self):
-        err = GeminiAPIError(
+        err = CryptoComAPIError(
             status=400,
             body='{"result":"error","reason":"InvalidNonce"}',
             url="/v1/test",
@@ -311,17 +311,17 @@ class TestGeminiAPIError:
         assert "400" in str(err)
 
     def test_error_message_without_reason(self):
-        err = GeminiAPIError(status=500, body="Internal Server Error", url="/v1/test")
+        err = CryptoComAPIError(status=500, body="Internal Server Error", url="/v1/test")
         assert "Internal Server Error" in str(err)
         assert "500" in str(err)
 
     def test_error_message_with_unknown_body(self):
-        err = GeminiAPIError(status=400, body="not json")
+        err = CryptoComAPIError(status=400, body="not json")
         assert "400" in str(err)
         assert "not json" in str(err)
 
     def test_attributes(self):
-        err = GeminiAPIError(status=403, body='{"reason":"Forbidden"}', url="/v1/test")
+        err = CryptoComAPIError(status=403, body='{"reason":"Forbidden"}', url="/v1/test")
         assert err.status == 403
         assert err.body == '{"reason":"Forbidden"}'
         assert err.url == "/v1/test"

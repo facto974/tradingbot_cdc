@@ -1,4 +1,4 @@
-"""Test script for GeminiClient – uses Gemini REST API correctly."""
+"""Test script for CryptoComClient – uses CryptoCom REST API correctly."""
 import os
 import sys
 import json
@@ -10,19 +10,19 @@ import httpx
 from dotenv import load_dotenv
 load_dotenv()  
 
-from src.broker.gemini_client import GeminiClient
+from src.broker.cryptocom_client import CryptoComClient
 
-API_KEY    = os.getenv("GEMINI_API_KEY", "")
-API_SECRET = os.getenv("GEMINI_API_SECRET", "")
-SANDBOX    = os.getenv("GEMINI_SANDBOX", "true").lower() == "true"
+API_KEY    = os.getenv("CRYPTOCOM_API_KEY", "")
+API_SECRET = os.getenv("CRYPTOCOM_API_SECRET", "")
+SANDBOX    = os.getenv("CRYPTOCOM_SANDBOX", "true").lower() == "true"
 
 if not API_KEY or not API_SECRET:
     print("⚠️  Aucune clé API trouvée dans l'environnement.")
-    print("   Veuillez définir GEMINI_API_KEY et GEMINI_API_SECRET dans .env")
+    print("   Veuillez définir CRYPTOCOM_API_KEY et CRYPTOCOM_API_SECRET dans .env")
     sys.exit(1)
 
-client   = GeminiClient(api_key=API_KEY, api_secret=API_SECRET, sandbox=SANDBOX)
-base_url = "https://api.sandbox.gemini.com" if SANDBOX else "https://api.gemini.com"
+client   = CryptoComClient(api_key=API_KEY, api_secret=API_SECRET, sandbox=SANDBOX)
+base_url = "https://api.sandbox.cryptocom.com" if SANDBOX else "https://api.cryptocom.com"
 
 def _sign_request(path: str) -> dict:
     """Construit les headers HMAC pour un appel privé direct."""
@@ -36,9 +36,9 @@ def _sign_request(path: str) -> dict:
     ).hexdigest()
     return {
         "Content-Type": "text/plain",
-        "X-GEMINI-APIKEY": API_KEY,
-        "X-GEMINI-PAYLOAD": b64.decode(),
-        "X-GEMINI-SIGNATURE": sig,
+        "X-CRYPTOCOM-APIKEY": API_KEY,
+        "X-CRYPTOCOM-PAYLOAD": b64.decode(),
+        "X-CRYPTOCOM-SIGNATURE": sig,
     }
 
 def test_public():
@@ -126,7 +126,7 @@ def test_account():
 if __name__ == "__main__":
     mode = "SANDBOX" if SANDBOX else "LIVE"
     print("═" * 55)
-    print(f"  Test GeminiClient — {mode}")
+    print(f"  Test CryptoComClient — {mode}")
     print(f"  URL  : {base_url}")
     print(f"  Key  : {API_KEY[:10]}...")
     print("═" * 55)

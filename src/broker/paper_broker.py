@@ -1,4 +1,4 @@
-"""Paper broker — simule l'exécution en local pour tester sans clé Gemini."""
+"""Paper broker — simule l'exécution en local pour tester sans clé CryptoCom."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

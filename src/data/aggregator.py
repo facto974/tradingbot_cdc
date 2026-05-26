@@ -61,7 +61,7 @@ _SOURCE_TIMEOUT: dict[str, float] = {
 
 
 def _normalize(symbol: str) -> str:
-    """Normalise un symbole Gemini/USD vers le format avec tiret.
+    """Normalise un symbole CryptoCom/USD vers le format avec tiret.
 
     AAVEUSD → AAVE-USD
     BTCUSD  → BTC-USD

@@ -1,7 +1,7 @@
-"""Tests d'intégration pour GeminiClient – nécessitent des clés API valides.
+"""Tests d'intégration pour CryptoComClient – nécessitent des clés API valides.
 
-Ces tests sont ignorés par défaut si GEMINI_API_KEY n'est pas défini.
-Utilisation : pytest tests/test_gemini_integration.py -v
+Ces tests sont ignorés par défaut si CRYPTOCOM_API_KEY n'est pas défini.
+Utilisation : pytest tests/test_cryptocom_integration.py -v
 """
 from __future__ import annotations
 
@@ -10,21 +10,21 @@ import pytest
 from dotenv import load_dotenv
 load_dotenv()
 
-from src.broker.gemini_client import GeminiClient
+from src.broker.cryptocom_client import CryptoComClient
 
-API_KEY    = os.getenv("GEMINI_API_KEY", "")
-API_SECRET = os.getenv("GEMINI_API_SECRET", "")
-SANDBOX    = os.getenv("GEMINI_SANDBOX", "true").lower() == "true"
+API_KEY    = os.getenv("CRYPTOCOM_API_KEY", "")
+API_SECRET = os.getenv("CRYPTOCOM_API_SECRET", "")
+SANDBOX    = os.getenv("CRYPTOCOM_SANDBOX", "true").lower() == "true"
 
 skip_no_key = pytest.mark.skipif(
     not API_KEY or not API_SECRET,
-    reason="GEMINI_API_KEY / GEMINI_API_SECRET non définies",
+    reason="CRYPTOCOM_API_KEY / CRYPTOCOM_API_SECRET non définies",
 )
 
 
 @pytest.fixture(scope="module")
-def client() -> GeminiClient:
-    return GeminiClient(api_key=API_KEY, api_secret=API_SECRET, sandbox=SANDBOX)
+def client() -> CryptoComClient:
+    return CryptoComClient(api_key=API_KEY, api_secret=API_SECRET, sandbox=SANDBOX)
 
 
 # ── Endpoints publics ──────────────────────────────────────────────────
@@ -33,7 +33,7 @@ class TestPublicIntegration:
     def test_book_btcusd(self):
         """Le book public doit contenir des bids et asks."""
         import httpx
-        base = "https://api.sandbox.gemini.com" if SANDBOX else "https://api.gemini.com"
+        base = "https://api.sandbox.cryptocom.com" if SANDBOX else "https://api.cryptocom.com"
         r = httpx.get(f"{base}/v1/book/BTCUSD")
         assert r.status_code == 200, f"Book échoué: {r.text[:100]}"
         data = r.json()
@@ -47,7 +47,7 @@ class TestPublicIntegration:
     def test_ticker_public(self):
         """Le ticker public doit retourner un prix > 0."""
         import httpx
-        base = "https://api.sandbox.gemini.com" if SANDBOX else "https://api.gemini.com"
+        base = "https://api.sandbox.cryptocom.com" if SANDBOX else "https://api.cryptocom.com"
         for sym in ["BTCUSD", "btcusd"]:
             r = httpx.get(f"{base}/v1/pubticker/{sym}")
             if r.status_code == 200:
@@ -64,7 +64,7 @@ class TestPublicIntegration:
 class TestPrivateIntegration:
     @skip_no_key
     def test_ticker_via_client(self, client):
-        """Le ticker via GeminiClient doit fonctionner."""
+        """Le ticker via CryptoComClient doit fonctionner."""
         try:
             ticker = client.ticker("BTC-USD")
             assert float(ticker["last"]) > 0, "Prix invalide"

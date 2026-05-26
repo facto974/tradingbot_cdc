@@ -27,7 +27,7 @@ class Settings:
     finnhub_api_key: str = ""
     reddit_client_id: str = ""
     reddit_client_secret: str = ""
-    reddit_user_agent: str = "gemini-trader/0.1"
+    reddit_user_agent: str = "cryptocom-trader/0.1"
     telegram_token: str = ""
     telegram_chat_id: str = ""
     metrics_port: int = 8000

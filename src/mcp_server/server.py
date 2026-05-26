@@ -25,7 +25,7 @@ def _agent() -> TradingAgent:
 
 
 def build_server() -> Server:
-    server = Server("gemini-trader")
+    server = Server("cryptocom-trader")
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -41,7 +41,7 @@ def build_server() -> Server:
                               "properties": {"symbol": {"type": "string"}},
                               "required": ["symbol"]}),
             Tool(name="place_order",
-                 description="Place un ordre sur Gemini (sandbox ou live selon config).",
+                 description="Place un ordre sur CryptoCom (sandbox ou live selon config).",
                  inputSchema={"type": "object",
                               "properties": {"symbol": {"type": "string"},
                                              "side": {"type": "string", "enum": ["buy", "sell"]},

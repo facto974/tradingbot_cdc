@@ -1,5 +1,5 @@
 {
-  "title": "GeminiMCP - Risk & Latency",
+  "title": "CryptoComMCP - Risk & Latency",
   "uid": "gmcp-risk",
   "schemaVersion": 39,
   "version": 1,
@@ -39,7 +39,7 @@
     {
       "id": 5,
       "type": "timeseries",
-      "title": "API latency (Gemini)",
+      "title": "API latency (CryptoCom)",
       "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
       "targets": [{"expr": "histogram_quantile(0.5, sum(rate(gmcp_api_latency_seconds_bucket[5m])) by (le, endpoint))", "legendFormat": "p50 {{endpoint}}", "refId": "A"}, {"expr": "histogram_quantile(0.95, sum(rate(gmcp_api_latency_seconds_bucket[5m])) by (le, endpoint))", "legendFormat": "p95 {{endpoint}}", "refId": "B"}]
     },

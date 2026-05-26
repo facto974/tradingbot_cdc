@@ -1,6 +1,6 @@
 """Data client for OHLCV data with free fallbacks.
 
-Attempts to fetch data from Gemini public API. If the request fails (e.g., unsupported
+Attempts to fetch data from CryptoCom public API. If the request fails (e.g., unsupported
 date range or symbol), it falls back to CCXT (Binance) then Yahoo Finance (yfinance),
 which are completely free and require no API key.
 
@@ -26,8 +26,8 @@ try:
 except Exception:  # pragma: no cover
     ccxt = None
 
-# Mapping from common interval names to Gemini API format
-GEMINI_INTERVAL_MAP = {
+# Mapping from common interval names to CryptoCom API format
+CRYPTOCOM_INTERVAL_MAP = {
     "1m": "1m",
     "5m": "5m",
     "15m": "15m",
@@ -54,8 +54,8 @@ CCXT_INTERVAL_MAP = {
     "1day": "1d",
 }
 
-# Headers pour eviter les erreurs 406 sur Gemini
-_GEMINI_HEADERS = {
+# Headers pour eviter les erreurs 406 sur CryptoCom
+_CRYPTOCOM_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -65,15 +65,15 @@ _GEMINI_HEADERS = {
 }
 
 
-def _fetch_from_gemini(symbol: str, start_ts: int, end_ts: int, interval: str) -> pd.DataFrame:
-    """Internal helper to query Gemini API."""
-    gemini_symbol = symbol.replace("-", "").lower()
-    # Map interval to Gemini's expected format
-    gemini_interval = GEMINI_INTERVAL_MAP.get(interval, interval)
-    url = f"https://api.gemini.com/v2/candles/{gemini_symbol}/{gemini_interval}"
+def _fetch_from_cryptocom(symbol: str, start_ts: int, end_ts: int, interval: str) -> pd.DataFrame:
+    """Internal helper to query CryptoCom API."""
+    cryptocom_symbol = symbol.replace("-", "").lower()
+    # Map interval to CryptoCom's expected format
+    cryptocom_interval = CRYPTOCOM_INTERVAL_MAP.get(interval, interval)
+    url = f"https://api.cryptocom.com/v2/candles/{cryptocom_symbol}/{cryptocom_interval}"
     params = {"since": start_ts, "until": end_ts, "limit": 1000}
     try:
-        resp = requests.get(url, headers=_GEMINI_HEADERS, params=params, timeout=10)
+        resp = requests.get(url, headers=_CRYPTOCOM_HEADERS, params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         if not data:
@@ -88,7 +88,7 @@ def _fetch_from_gemini(symbol: str, start_ts: int, end_ts: int, interval: str) -
         df.columns = df.columns.str.title()
         return df.dropna()
     except Exception as e:
-        logging.warning(f"Gemini API error: {e}")
+        logging.warning(f"CryptoCom API error: {e}")
         return pd.DataFrame()
 
 
@@ -158,13 +158,13 @@ def fetch_ohlcv(
 ) -> pd.DataFrame:
     """Return OHLCV data for *symbol*.
 
-    The function first tries the Gemini public API. If that fails (e.g. because the
+    The function first tries the CryptoCom public API. If that fails (e.g. because the
     requested date range is not supported), it falls back to CCXT (Binance) then
     Yahoo Finance (yfinance). The returned DataFrame always has the same column
     names (``Open``, ``High``, ``Low``, ``Close``, ``Volume``) and a
     ``DateTimeIndex``.
     """
-    # Convert start / end to timestamps (ms) for Gemini
+    # Convert start / end to timestamps (ms) for CryptoCom
     now = datetime.datetime.utcnow()
     if start:
         start_dt = datetime.datetime.strptime(start, "%Y-%m-%d")
@@ -183,8 +183,8 @@ def fetch_ohlcv(
     start_ts = int(start_dt.timestamp() * 1000)
     end_ts = int(end_dt.timestamp() * 1000)
 
-    # Try Gemini first
-    df = _fetch_from_gemini(symbol, start_ts, end_ts, interval)
+    # Try CryptoCom first
+    df = _fetch_from_cryptocom(symbol, start_ts, end_ts, interval)
     if not df.empty:
         return df
 

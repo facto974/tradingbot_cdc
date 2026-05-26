@@ -1,7 +1,7 @@
-"""OHLCV data — Gemini → CCXT/Binance → Yahoo Finance (tous gratuits, sans clé).
+"""OHLCV data — CryptoCom → CCXT/Binance → Yahoo Finance (tous gratuits, sans clé).
 
 Cascade de fallbacks :
-  1. Gemini public API  (crypto natif, le plus précis)
+  1. CryptoCom public API  (crypto natif, le plus précis)
   2. Binance klines     (via binance_client, CDN public, toujours dispo)
   3. Yahoo Finance      (yfinance, pour actions + crypto)
 """
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # ── Intervalle maps ───────────────────────────────────────────
 
-_GEMINI_INTERVAL = {
+_CRYPTOCOM_INTERVAL = {
     "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
     "1h": "1hr", "1hr": "1hr",
     "6h": "6hr", "6hr": "6hr",
@@ -48,12 +48,12 @@ _PERIOD_TO_LIMIT = {
 
 # ── Fetchers individuels ──────────────────────────────────────
 
-def _from_gemini(symbol: str, start_ts: int, end_ts: int, interval: str) -> pd.DataFrame:
-    """Gemini public REST API."""
+def _from_cryptocom(symbol: str, start_ts: int, end_ts: int, interval: str) -> pd.DataFrame:
+    """CryptoCom public REST API."""
     from ._http import get_json
-    gemini_sym      = symbol.replace("-", "").lower()
-    gemini_interval = _GEMINI_INTERVAL.get(interval, "1hr")
-    url             = f"https://api.gemini.com/v2/candles/{gemini_sym}/{gemini_interval}"
+    cryptocom_sym      = symbol.replace("-", "").lower()
+    cryptocom_interval = _CRYPTOCOM_INTERVAL.get(interval, "1hr")
+    url             = f"https://api.cryptocom.com/v2/candles/{cryptocom_sym}/{cryptocom_interval}"
     try:
         data = get_json(url, params={"since": start_ts, "until": end_ts, "limit": 1000})
         if not data or not isinstance(data, list):
@@ -65,7 +65,7 @@ def _from_gemini(symbol: str, start_ts: int, end_ts: int, interval: str) -> pd.D
         df.columns = df.columns.str.title()
         return df.dropna()
     except Exception as e:
-        logger.debug("Gemini OHLCV error %s: %s", symbol, e)
+        logger.debug("CryptoCom OHLCV error %s: %s", symbol, e)
         return pd.DataFrame()
 
 
@@ -151,10 +151,10 @@ def fetch_ohlcv(
     start_ts = int(start_dt.timestamp() * 1000)
     end_ts   = int(end_dt.timestamp()   * 1000)
 
-    # 1. Gemini
-    df = _from_gemini(symbol, start_ts, end_ts, interval)
+    # 1. CryptoCom
+    df = _from_cryptocom(symbol, start_ts, end_ts, interval)
     if not df.empty:
-        logger.debug("OHLCV via Gemini pour %s: %d bars", symbol, len(df))
+        logger.debug("OHLCV via CryptoCom pour %s: %d bars", symbol, len(df))
         return df
 
     # 2. Binance klines (le plus fiable pour les cryptos)

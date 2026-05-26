@@ -29,9 +29,9 @@ from src.strategy.momentum_sentiment import (MomentumSentimentStrategy,
 def main(config: str | None, symbol: str, start: str, end: str | None, interval: str) -> None:
     console = Console()
     console.log(f"Fetching{symbol} {interval} from {start} to {end or 'now'}...")
-    # Accept '1day' as an alias for '1d' (Gemini API expects '1d')
-    interval_gemini = "1d" if interval == "1day" else interval
-    df = fetch_ohlcv(symbol, start=start, end=end, interval=interval_gemini)
+    # Accept '1day' as an alias for '1d' (CryptoCom API expects '1d')
+    interval_cryptocom = "1d" if interval == "1day" else interval
+    df = fetch_ohlcv(symbol, start=start, end=end, interval=interval_cryptocom)
     if df.empty:
         console.print("[red]No data fetched.")
         return
