@@ -26,7 +26,7 @@ from ..metrics import (
 )
 from ..strategy.momentum_sentiment import MomentumSentimentStrategy, StrategyConfig
 from ..broker.paper_broker import PaperBroker
-from ..broker.crypto_com_client import CryptoComClient
+from ..broker.cryptocom_client import CryptoComClient
 from ..telegram_bot import TelegramNotifier
 from .openrouter_client import OpenRouterAgent
 

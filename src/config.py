@@ -37,16 +37,16 @@ class Settings:
     mode: str = "paper"
     exchange: str = "crypto_com"
     universe: list[str] = field(default_factory=lambda: [
-        "BTC-USDC",
-        "ETH-USDC",
-        "SOL-USDC",
-        "BNB-USDC",
-        "XRP-USDC",
-        "ADA-USDC",
-        "DOGE-USDC",
-        "MATIC-USDC",
-        "DOT-USDC",
-        "AVAX-USDC",
+        "BTC-USD",
+        "ETH-USD",
+        "SOL-USD",
+        "BNB-USD",
+        "XRP-USD",
+        "ADA-USD",
+        "DOGE-USD",
+        "MATIC-USD",
+        "DOT-USD",
+        "AVAX-USD",
     ])
     loop_interval: int = 60
 

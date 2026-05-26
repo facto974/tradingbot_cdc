@@ -2,8 +2,8 @@
 
 Doc officielle : https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html
 
-Symboles : format utilisateur "BTC-USDC" -> converti en "BTC_USD"
-           (mapping USDC->USD conserve selon preference utilisateur).
+Symboles : format utilisateur "BTC-USD" -> converti en "BTC_USD"
+           (mapping USD->USD conserve selon preference utilisateur).
 """
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ class CryptoComClient:
 
     Exemple :
         cc = CryptoComClient(api_key, api_secret, sandbox=True)
-        print(cc.ticker("BTC-USDC"))
+        print(cc.ticker("BTC-USD"))
         print(cc.balances())
     """
 
@@ -80,7 +80,7 @@ class CryptoComClient:
 
     @staticmethod
     def _fmt(sym: str) -> str:
-        """Convertit 'BTC-USDC' -> 'BTC_USD'."""
+        """Convertit 'BTC-USD' -> 'BTC_USD'."""
         s = sym.replace("-", "_").upper()
         if s.endswith("_USDC"):
             s = s[:-5] + "_USD"
@@ -252,5 +252,5 @@ if __name__ == "__main__":
         api_secret="VOTRE_SECRET_UAT",
         sandbox=True,
     )
-    print("Ticker BTC-USDC ->", cc.ticker("BTC-USDC"))
+    print("Ticker BTC-USD ->", cc.ticker("BTC-USD"))
     print("Balances       ->", cc.balances())

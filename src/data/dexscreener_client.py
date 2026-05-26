@@ -29,7 +29,7 @@ def _price_key(symbol: str) -> str:
 def _base_token(symbol: str) -> str:
     """Extrait le nom du token : 'AAVEUSD' → 'AAVE', 'BTC-USD' → 'BTC'."""
     s = symbol.upper()
-    for suffix in ["USDC", "USDT", "USD", "GUSD", "RLUSD", "EUR", "GBP", "SGD"]:
+    for suffix in ["USD", "USDT", "USD", "GUSD", "RLUSD", "EUR", "GBP", "SGD"]:
         if s.endswith(suffix):
             return s[:-len(suffix)]
     return s.split("-")[0]
@@ -81,10 +81,10 @@ def _search(symbol: str) -> list[dict] | None:
         if resp.status_code == 200:
             data = resp.json()
             pairs = data.get("pairs", [])
-            # Filtrer les paires vs USD (USDC, USDT, BUSD, etc.)
+            # Filtrer les paires vs USD (USD, USDT, BUSD, etc.)
             usd_pairs = [
                 p for p in pairs
-                if p.get("quoteToken", {}).get("symbol", "").upper() in ("USD", "USDC", "USDT", "BUSD")
+                if p.get("quoteToken", {}).get("symbol", "").upper() in ("USD", "USD", "USDT", "BUSD")
             ]
             return usd_pairs if usd_pairs else pairs[:5]
         return None
