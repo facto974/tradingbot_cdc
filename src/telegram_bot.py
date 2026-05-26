@@ -82,7 +82,7 @@ class TelegramNotifier:
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._reply(update, (
-            "🤖 <b>GeminiMCP Trader</b>\n\n"
+            "🤖 <b>TradingBotCDC Trader</b>\n\n"
             "Commandes disponibles :\n"
             "/status  — État général du bot\n"
             "/positions — Positions ouvertes\n"

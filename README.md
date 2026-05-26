@@ -1,4 +1,4 @@
-# GeminiMCP-Trader
+# TradingBotCDC-Trader
 
 Trading agentique automatisé sur **Gemini Exchange** via le **Model Context Protocol (MCP)**, avec stratégie hybride **momentum + sentiment social**, backtesting vectorisé, paper-trading sandbox, et stack d'observabilité **Prometheus + Grafana** prête à l'emploi.
 

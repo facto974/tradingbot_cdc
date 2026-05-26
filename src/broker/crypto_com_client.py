@@ -55,30 +55,33 @@ class CryptoComClient:
     def _ts() -> str:
         return str(int(time.time() * 1000))
 
-    def _sign(self, method: str, path: str, body: str = "") -> tuple[str, str, str]:
-        """HMAC-SHA256 → (signature, nonce, body)."""
-        nonce = self._ts()
-        msg = method.upper() + path + body + nonce
-        sig = hmac.new(self.secret, msg.encode(), hashlib.sha256).hexdigest()
-        return sig, nonce, body
+    def _sign(self, nonce: str, method: str, path: str, body_str: str) -> str:
+        """HMAC-SHA256 hex signature."""
+        msg = nonce + method.upper() + path + body_str
+        return hmac.new(self.secret, msg.encode(), hashlib.sha256).hexdigest()
 
     def _req(self, method: str, path: str, params: dict | None = None,
              json_body: dict | None = None, signed: bool = False) -> dict:
         url = f"{self.base}{path}"
+        nonce = self._ts()
         headers = {}
         body_str = ""
 
-        if json_body:
+        if json_body is not None:
             body_str = json.dumps(json_body)
+            headers["Content-Type"] = "application/json"
+        elif method == "POST":
+            # Crypto.com exige un body JSON même vide pour les POST privés
+            body_str = "{}"
             headers["Content-Type"] = "application/json"
 
         if signed:
-            sig, nonce, _ = self._sign(method, path, body_str)
+            sig = self._sign(nonce, method, path, body_str)
             headers.update({
+                "Content-Type": "application/json",
                 "X-MAL-API-KEY": self.api_key,
                 "X-MAL-SIGNATURE": sig,
                 "X-MAL-NONCE": nonce,
-                "Content-Type": "application/json",
             })
 
         with httpx.Client(timeout=self.timeout) as c:
@@ -118,7 +121,7 @@ class CryptoComClient:
     # ── Privé ───────────────────────────────────────────────────────────
 
     def balances(self) -> list[dict]:
-        d = self._req("GET", "/v1/private/get-account-summary", signed=True)
+        d = self._req("POST", "/v1/private/get-account-summary", json_body={}, signed=True)
         accounts = d.get("result", {}).get("accounts", [])
         return [{"currency": a.get("currency"),
                   "balance": float(a.get("balance", 0)),

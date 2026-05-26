@@ -2,7 +2,7 @@ apiVersion: 1
 
 providers:
   - name: gemini-trader
-    folder: GeminiMCP-Trader
+    folder: TradingBotCDC-Trader
     type: file
     disableDeletion: false
     editable: true
