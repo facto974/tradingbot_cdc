@@ -26,7 +26,7 @@ from ..metrics import (
 )
 from ..strategy.momentum_sentiment import MomentumSentimentStrategy, StrategyConfig
 from ..broker.paper_broker import PaperBroker
-from ..broker.gemini_client import GeminiClient
+from ..broker.crypto_com_client import CryptoComClient
 from ..telegram_bot import TelegramNotifier
 from .openrouter_client import OpenRouterAgent
 
@@ -160,10 +160,10 @@ class TradingAgent:
         self.paper  = PaperBroker(initial_cash=self.initial_capital)
         self._broker_lock = threading.Lock()   # protège PaperBroker (non thread-safe)
 
-        self.gemini = GeminiClient(
-            settings.gemini_api_key,
-            settings.gemini_api_secret,
-            sandbox=settings.gemini_sandbox,
+        self.exchange = CryptoComClient(
+            settings.cryptocom_api_key,
+            settings.cryptocom_api_secret,
+            sandbox=settings.cryptocom_sandbox,
         )
 
         self._tg_notifier = TelegramNotifier(
@@ -334,9 +334,9 @@ class TradingAgent:
 
         try:
             t0  = time.time()
-            res = self.gemini.place_order(
+            res = self.exchange.place_order(
                 symbol, side, qty, price=price,
-                order_type="exchange limit",
+                order_type="LIMIT",
                 client_order_id=str(uuid.uuid4()),
             )
             API_LATENCY.labels(endpoint="place_order").observe(time.time() - t0)
@@ -351,8 +351,9 @@ class TradingAgent:
             else:
                 self._tg.send(f"🚀 <b>Nouveau trade (live) : {symbol}</b>\n├ {side.upper()} {qty:.4f} @ ${price:.2f}\n└ Ordre : {res.get('order_id','?')}")
             return {**res, **tr}
-        except Exception:
-            ERRORS.labels(component="gemini").inc()
+        except Exception as e:
+            ERRORS.labels(component="cryptocom").inc()
+            self._log(f"[red]❌ Crypto.com ordre échoué : {e}[/]")
             return {}
 
     def _position_size(self, symbol: str, price: float, volatility: float) -> float:
@@ -562,7 +563,7 @@ class TradingAgent:
         console.print(self._build_display())
 
     def run_forever(self) -> None:
-        self._log(f"[green]Agent démarré — mode={self.mode} sandbox={self.s.gemini_sandbox}[/]")
+        self._log(f"[green]Agent démarré — mode={self.mode} exchange={self.s.exchange}[/]")
         try:
             self._tg_notifier.start()
             self._tg.send(

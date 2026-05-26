@@ -18,9 +18,9 @@ class Settings:
     raw: dict[str, Any] = field(default_factory=dict)
 
     # Env
-    gemini_api_key: str = ""
-    gemini_api_secret: str = ""
-    gemini_sandbox: bool = True
+    cryptocom_api_key: str = ""
+    cryptocom_api_secret: str = ""
+    cryptocom_sandbox: bool = True
     groq_api_key: str = ""
     openrouter_api_key: str = ""
     openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
@@ -35,17 +35,18 @@ class Settings:
 
     # YAML
     mode: str = "paper"
+    exchange: str = "crypto_com"
     universe: list[str] = field(default_factory=lambda: [
-        "BTC-USD",   # Bitcoin
-        "ETH-USD",   # Ethereum
-        "SOL-USD",   # Solana
-        "BNB-USD",   # BNB
-        "XRP-USD",   # Ripple
-        "ADA-USD",   # Cardano
-        "DOGE-USD",  # Dogecoin
-        "MATIC-USD", # Polygon
-        "DOT-USD",   # Polkadot
-        "AVAX-USD",  # Avalanche
+        "BTC-USDC",
+        "ETH-USDC",
+        "SOL-USDC",
+        "BNB-USDC",
+        "XRP-USDC",
+        "ADA-USDC",
+        "DOGE-USDC",
+        "MATIC-USDC",
+        "DOT-USDC",
+        "AVAX-USDC",
     ])
     loop_interval: int = 60
 
@@ -63,9 +64,9 @@ class Settings:
                     cfg = yaml.safe_load(f) or {}
 
         s = cls(raw=cfg)
-        s.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
-        s.gemini_api_secret = os.getenv("GEMINI_API_SECRET", "")
-        s.gemini_sandbox = os.getenv("GEMINI_SANDBOX", "true").lower() == "true"
+        s.cryptocom_api_key = os.getenv("CRYPTOCOM_API_KEY", "")
+        s.cryptocom_api_secret = os.getenv("CRYPTOCOM_SECRET_KEY", "")
+        s.cryptocom_sandbox = os.getenv("CRYPTOCOM_SANDBOX", "true").lower() == "true"
         s.groq_api_key = os.getenv("GROQ_API_KEY", "")
         s.openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "")
         s.openrouter_model = os.getenv("OPENROUTER_MODEL", s.openrouter_model)
@@ -75,22 +76,16 @@ class Settings:
         s.reddit_user_agent = os.getenv("REDDIT_USER_AGENT", s.reddit_user_agent)
         s.telegram_token = os.getenv("TELEGRAM_TOKEN", "")
         s.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-        # Load reddit subs with weights from config
         s.reddit_subs = cfg.get("strategy", {}).get("sentiment", {}).get("reddit_subs", {})
-        # Load reddit limit for sentiment aggregation
         s.reddit_limit = int(cfg.get("strategy", {}).get("sentiment", {}).get("reddit_limit", 50))
-        # Force enable Reddit client for debugging
-        if s.reddit_client_id and s.reddit_client_secret:
-            s.reddit_client_id = s.reddit_client_id
-            s.reddit_client_secret = s.reddit_client_secret
         s.metrics_port = int(os.getenv("METRICS_PORT", str(cfg.get("metrics", {}).get("port", 8000))))
         s.sqlite_path = os.getenv("SQLITE_PATH", s.sqlite_path)
 
         s.mode = cfg.get("mode", s.mode)
+        s.exchange = cfg.get("exchange", s.exchange)
         s.universe = cfg.get("universe", s.universe)
         s.loop_interval = int(cfg.get("loop_interval_sec", s.loop_interval))
 
-        # Load strategy parameters from yaml
         strat = cfg.get("strategy", {})
         s.strategy_weights = strat.get("weights", {})
         s.strategy_thresholds = strat.get("thresholds", {})
@@ -98,7 +93,4 @@ class Settings:
         s.strategy_sentiment = strat.get("sentiment", {})
         s.strategy_risk = cfg.get("risk", {})
 
-        # honor sandbox flag in yaml if explicit
-        if "sandbox" in cfg:
-            s.gemini_sandbox = bool(cfg["sandbox"])
         return s
