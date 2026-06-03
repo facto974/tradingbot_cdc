@@ -1,4 +1,4 @@
-"""Boucle de trading — orchestre data → strat → LLM → broker → métriques."""
+"""Boucle de trading — orchestre data -> strat -> LLM -> broker -> metriques."""
 from __future__ import annotations
 
 import queue
@@ -29,6 +29,12 @@ from ..broker.paper_broker import PaperBroker
 from ..broker.cryptocom_client import CryptoComClient
 from ..telegram_bot import TelegramNotifier
 from .openrouter_client import OpenRouterAgent
+
+# Force UTF-8 encoding for stdout (fixes UnicodeEncodeError on Windows)
+import sys
+import io
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 console = Console()
 
@@ -64,7 +70,7 @@ class _TelegramQueue:
         self._thread.join(timeout=5)
 
 # ---------------------------------------------------------------------------
-# Cache volatilité
+# Cache volatilite
 # ---------------------------------------------------------------------------
 
 _vol_cache: dict[str, dict] = {}
@@ -119,19 +125,23 @@ class TradingAgent:
         risk = cfg.get("risk", {})
 
         sc = StrategyConfig(
-            w_momentum=weights.get("momentum", 0.50),
-            w_sentiment=weights.get("sentiment", 0.30),
-            w_fear_greed=weights.get("fear_greed", 0.20),
-            lookback=mom_cfg.get("lookback_days", 14),
-            ema_smooth=mom_cfg.get("ema_smooth", 12),
-            threshold_long=thresh.get("long", 0.0),
-            threshold_short=thresh.get("short", -0.30),
+            w_momentum=weights.get("momentum", 0.60),
+            w_sentiment=weights.get("sentiment", 0.15),
+            w_fear_greed=weights.get("fear_greed", 0.25),
+            lookback=mom_cfg.get("lookback_days", 21),
+            ema_smooth=mom_cfg.get("ema_smooth", 34),
+            threshold_long=thresh.get("long", 0.35),
+            threshold_short=thresh.get("short", -0.55),
             close_threshold=thresh.get("close_threshold", -0.10),
+            close_short_threshold=thresh.get("close_short_threshold", -0.60),
             allow_short=risk.get("allow_short", False),
             high_conviction=sent_cfg.get("high_conviction", False),
             min_active_sentiment_sources=sent_cfg.get("min_active_sources", 2),
-            require_aligned=sent_cfg.get("require_aligned", True),
+            require_aligned=sent_cfg.get("require_aligned", False),
             min_momentum_abs=sent_cfg.get("min_momentum_abs", 0.10),
+            enable_trend_filter=mom_cfg.get("enable_trend_filter", True),
+            sma_fast=mom_cfg.get("sma_fast", 50),
+            sma_slow=mom_cfg.get("sma_slow", 200),
         )
         self.strategy = MomentumSentimentStrategy(sc)
 
@@ -175,10 +185,17 @@ class TradingAgent:
         self.validate_signals = llm_cfg.get("validate_signals", True)
         self._llm_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="llm-val")
 
-        self.max_position_usd = float(risk.get("max_position_usd", 500))
-        self.kelly_fraction = float(risk.get("kelly_fraction", 0.25))
-        self.stop_loss_pct = float(risk.get("stop_loss_pct", 0.03))
+        self.max_position_usd = float(risk.get("max_position_usd", 80))
+        self.kelly_fraction = float(risk.get("kelly_fraction", 0.70))
+        self.stop_loss_pct = float(risk.get("stop_loss_pct", 0.035))
         self.take_profit_pct = float(risk.get("take_profit_pct", 0.06))
+        # TP/SL spéciaux pour les SHORTS (bear market moves rapides)
+        self.short_stop_loss_pct = float(risk.get("short_stop_loss_pct", 0.03))
+        self.short_take_profit_pct = float(risk.get("short_take_profit_pct", 0.05))
+        # Limites de positions et stop-loss
+        self.max_concurrent_positions = int(risk.get("max_concurrent_positions", 3))
+        self.equity_stop_loss_pct = float(risk.get("equity_stop_loss_pct", 0.08))
+        self._stop_triggered = False
 
         self.db = Database(settings.sqlite_path)
         self._restore_positions()
@@ -193,7 +210,7 @@ class TradingAgent:
         self._last_summary_hash: str | None = None
 
         self._snap_executor = ThreadPoolExecutor(
-            max_workers=max(len(settings.universe), 4),
+            max_workers=1,  # 1 seul worker pour éviter les race conditions sur _prev_decisions
             thread_name_prefix="snap",
         )
 
@@ -204,13 +221,15 @@ class TradingAgent:
             pos = Position(symbol=symbol, side=side, qty=qty, avg_price=avg_price)
             self.paper.positions[symbol] = pos
         if rows:
-            self._log(f"[dim]📦 {len(rows)} position(s) restaurée(s) depuis la DB[/]")
+            total_invested = sum(abs(p.qty) * p.avg_price for p in self.paper.positions.values() if abs(p.qty) > 0)
+            self.paper.cash -= total_invested
+            self._log(f"[dim]{len(rows)} position(s) restaurée(s) ({total_invested:.2f}$ investis) depuis la BDD[/]")
 
     def _log(self, msg: str) -> None:
         console.log(msg)
 
     def _fmt(self, x: float | None) -> str:
-        return f"{x:+.3f}" if x is not None else "  · "
+        return f"{x:+.3f}" if x is not None else "  . "
 
     def _build_display(self) -> Panel:
         table = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 1))
@@ -226,7 +245,7 @@ class TradingAgent:
             d = snap_copy.get(symbol, {})
             price = d.get("price", 0)
             score = d.get("score")
-            decision = d.get("decision", "—")
+            decision = d.get("decision", "-")
             pos_qty = d.get("pos_qty", 0)
             pos_pnl = d.get("pos_pnl", 0)
 
@@ -236,8 +255,8 @@ class TradingAgent:
 
             table.add_row(
                 f"[bold]{symbol.split('-')[0]}[/]",
-                f"${price:,.0f}" if price > 0 else "—",
-                f"[{sc}]{score:+.3f}[/]" if score is not None else "—",
+                f"${price:,.0f}" if price > 0 else "-",
+                f"[{sc}]{score:+.3f}[/]" if score is not None else "-",
                 f"[{dc}]{decision}[/]",
                 self._fmt(d.get("sentiment")),
                 self._fmt(d.get("futures_ls")),
@@ -253,39 +272,39 @@ class TradingAgent:
 
         summary = (
             f"[bold]Mode:[/] {self.mode}  [bold]Cash:[/] ${cash:.2f}  "
-            f"[bold]Equity:[/] ${equity:.2f}  [bold]P&L Réel:[/] ${rpnl:.2f}  "
-            f"[bold]P&L Non-Réel:[/] ${unreal:.2f}  [bold]Trades:[/] {ntrades}"
+            f"[bold]Equity:[/] ${equity:.2f}  [bold]P&L Réalisé:[/] ${rpnl:.2f}  "
+            f"[bold]P&L Non-réalisé:[/] ${unreal:.2f}  [bold]Trades:[/] {ntrades}"
         )
-        return Panel(table, title="[bold yellow]📊 TradingBot CDC[/]", subtitle=summary, border_style="blue")
+        return Panel(table, title="[bold yellow]TradingBot CDC[/]", subtitle=summary, border_style="blue")
 
     def _send_telegram_summary(self) -> None:
         with self._snapshots_lock:
             snap_copy = dict(self._last_snapshots)
         with self._broker_lock:
             equity, unreal = self.paper.equity({s: d.get("price", 0) for s, d in snap_copy.items()})
-            pos_count = sum(1 for p in self.paper.positions.values() if p.qty > 0)
+            pos_count = sum(1 for p in self.paper.positions.values() if abs(p.qty) > 0)
             rpnl = self.paper.realized_pnl
             ntrades = len(self.paper.trades)
         perf = (equity / self.initial_capital - 1) * 100
         signals = [
-            f"  {s.split('-')[0]} → {d['decision']} (score={d['score']:+.3f})"
+            f"  {s.split('-')[0]} -> {d['decision']} (score={d['score']:+.3f})"
             for s in self.s.universe
             if (d := snap_copy.get(s, {})) and d.get("decision") in ("LONG", "SHORT")
         ]
         signals_str = "\n".join(signals[:6]) or "  Aucun signal actif"
         issues = [
-            f"  ⚠️ {s.split('-')[0]} : données manquantes"
+            f"  (i) {s.split('-')[0]} : données manquantes"
             for s in self.s.universe
-            if snap_copy.get(s, {}).get("decision") == "—"
+            if snap_copy.get(s, {}).get("decision") == "-"
         ]
         msg = (
-            f"📊 <b>Résumé périodique</b>\n"
-            f"├ Equity : ${equity:.2f} ({perf:+.3f}%)\n"
-            f"├ Positions : {pos_count}\n"
-            f"├ P&L Réel : ${rpnl:+.2f}\n"
-            f"├ P&L Non-réel : ${unreal:+.2f}\n"
-            f"├ Trades : {ntrades}\n"
-            f"└ Signaux :\n{signals_str}"
+            f"Résumé périodique\n"
+            f"| Equity : ${equity:.2f} ({perf:+.3f}%)\n"
+            f"| Positions : {pos_count}\n"
+            f"| P&L Réalisé : ${rpnl:+.2f}\n"
+            f"| P&L Non-réalisé : ${unreal:+.2f}\n"
+            f"| Trades : {ntrades}\n"
+            f"| Signaux :\n{signals_str}"
             + ("\n" + "\n".join(issues) if issues else "")
         )
         h = f"{equity:.2f}|{pos_count}|{ntrades}|{signals_str}"
@@ -296,7 +315,7 @@ class TradingAgent:
 
     def _execute(self, symbol: str, side: str, qty: float, price: float) -> dict[str, Any]:
         if price <= 0 or qty <= 0:
-            self._log(f"[yellow]⚠️ Ignored order {symbol} {side} qty={qty} price={price} (invalid values)[/]")
+            self._log(f"[yellow](i) Ordre ignoré {symbol} {side} qty={qty} price={price} (valeurs invalides)[/]")
             return {}
         ORDERS.labels(side=side, symbol=symbol).inc()
         if self.mode == "paper":
@@ -304,12 +323,12 @@ class TradingAgent:
                 tr = self.paper.market(symbol, side, qty, price)
             self.db.insert_trade(symbol, side, qty, price, "paper", fee=tr["fee"], pnl=tr["pnl"])
             pnl_str = f" P&L={tr['pnl']:+.2f}" if tr["pnl"] != 0 else ""
-            self._log(f"[cyan]📈 {symbol} {side.upper()} {qty} @ ${price:.2f}{pnl_str}[/]")
+            self._log(f"[cyan]{symbol} {side.upper()} {qty} @ ${price:.2f}{pnl_str}[/]")
             if tr.get("pnl", 0) != 0:
-                emoji = "🟢" if tr["pnl"] > 0 else "🔴"
-                self._tg.send(f"{emoji} <b>Trade fermé : {symbol}</b>\n├ {side.upper()} {qty:.4f} @ ${price:.2f}\n└ P&L : ${tr['pnl']:+.2f}")
+                emoji = "(g)" if tr["pnl"] > 0 else "(r)"
+                self._tg.send(f"{emoji} Trade fermé : {symbol}\n| {side.upper()} {qty:.4f} @ ${price:.2f}\n| P&L : ${tr['pnl']:+.2f}")
             else:
-                self._tg.send(f"📈 <b>Nouveau trade : {symbol}</b>\n├ {side.upper()} {qty:.4f} @ ${price:.2f}")
+                self._tg.send(f"Nouveau trade : {symbol}\n| {side.upper()} {qty:.4f} @ ${price:.2f}")
             return tr
         try:
             t0 = time.time()
@@ -319,25 +338,27 @@ class TradingAgent:
             with self._broker_lock:
                 tr = self.paper.market(symbol, side, qty, price)
             pnl_str = f" P&L={tr['pnl']:+.2f}" if tr["pnl"] != 0 else ""
-            self._log(f"[cyan]🚀 {symbol} {side.upper()} {qty} @ ${price:.2f} (ordre={res.get('order_id','?')}){pnl_str}[/]")
+            self._log(f"[cyan]{symbol} {side.upper()} {qty} @ ${price:.2f} (ordre={res.get('order_id','?')}){pnl_str}[/]")
             if tr.get("pnl", 0) != 0:
-                emoji = "🟢" if tr["pnl"] > 0 else "🔴"
-                self._tg.send(f"{emoji} <b>Trade fermé (live) : {symbol}</b>\n├ {side.upper()} {qty:.4f} @ ${price:.2f}\n└ P&L : ${tr['pnl']:+.2f}")
+                emoji = "(g)" if tr["pnl"] > 0 else "(r)"
+                self._tg.send(f"{emoji} Trade fermé (live) : {symbol}\n| {side.upper()} {qty:.4f} @ ${price:.2f}\n| P&L : ${tr['pnl']:+.2f}")
             else:
-                self._tg.send(f"🚀 <b>Nouveau trade (live) : {symbol}</b>\n├ {side.upper()} {qty:.4f} @ ${price:.2f}\n└ Ordre : {res.get('order_id','?')}")
+                self._tg.send(f"Nouveau trade (live) : {symbol}\n| {side.upper()} {qty:.4f} @ ${price:.2f}\n| Ordre : {res.get('order_id','?')}")
             return {**res, **tr}
         except Exception as e:
             ERRORS.labels(component="cryptocom").inc()
-            self._log(f"[red]❌ Crypto.com ordre échoué : {e}[/]")
+            self._log(f"[red]Crypto.com : échec de l'ordre : {e}[/]")
             return {}
 
     def _position_size(self, symbol: str, price: float, volatility: float) -> float:
         with self._broker_lock:
             equity, _ = self.paper.equity({})
-            open_count = sum(1 for p in self.paper.positions.values() if p.qty > 0)
-        max_notional = min(equity * 0.02, self.max_position_usd)
+            open_count = sum(1 for p in self.paper.positions.values() if abs(p.qty) > 0)
+        # 15% du capital par position pour accumuler (Option A)
+        max_notional = min(equity * 0.15, self.max_position_usd)
+        # Réduction proportionnelle à la volatilité : plus c'est volatil, plus on réduit
         vol_factor = min(1.0, 0.05 / max(volatility, 0.01)) if volatility > 0 else 1.0
-        diversification_factor = max(0.3, 1.0 - open_count * 0.2)
+        diversification_factor = max(0.3, 1.0 - open_count * 0.25)
         return max_notional * vol_factor * diversification_factor
 
     def _process_symbol(self, symbol: str, marks: dict[str, float], marks_lock: threading.Lock) -> None:
@@ -345,8 +366,8 @@ class TradingAgent:
             snap = self.aggregator.snapshot(symbol)
         except Exception as e:
             ERRORS.labels(component="data").inc()
-            self._log(f"[red]Erreur données {symbol}: {e}[/]")
-            self._tg.send(f"❌ <b>Erreur données</b> {symbol} : {str(e)[:100]}")
+            self._log(f"[red]Erreur de données {symbol}: {e}[/]")
+            self._tg.send(f"Erreur de données {symbol} : {str(e)[:100]}")
             return
         if snap.price <= 0.01:
             return
@@ -356,7 +377,11 @@ class TradingAgent:
         if snap.reddit is not None: REDDIT_SENT.labels(symbol=symbol).set(snap.reddit)
         if snap.futures_ls is not None: FUTURES_LS_RATIO.labels(symbol=symbol).set(snap.futures_ls)
         if snap.fear_greed is not None: FEAR_GREED.set((snap.fear_greed + 1) * 50)
-        sig = self.strategy.evaluate(snap.ohlcv, reddit=snap.reddit, futures_ls=snap.futures_ls, coingecko=snap.coingecko_social, fear_greed=snap.fear_greed, binance_change=snap.binance_change, binance_taker=snap.binance_taker)
+        # Récupérer la position courante pour la stratégie (thread-safe via le lock)
+        with self._broker_lock:
+            current_pos = self.paper.positions.get(symbol)
+            pos_side = current_pos.side if current_pos and abs(current_pos.qty) > 0 else ""
+        sig = self.strategy.evaluate(snap.ohlcv, reddit=snap.reddit, futures_ls=snap.futures_ls, coingecko=snap.coingecko_social, fear_greed=snap.fear_greed, binance_change=snap.binance_change, binance_taker=snap.binance_taker, symbol=symbol, position_side=pos_side)
         SCORE.labels(symbol=symbol).set(sig.score)
         COMPOSITE_SENT.labels(symbol=symbol).set(sig.sentiment)
         self.db.record_signal(symbol, sig.score, sig.momentum, sig.sentiment, sig.fear_greed, sig.decision)
@@ -364,36 +389,62 @@ class TradingAgent:
             pos = self.paper.positions.get(symbol)
             pos_qty = pos.qty if pos else 0
             pos_pnl = 0.0
-            if pos and pos.qty > 0:
+            if pos and abs(pos.qty) > 0:
                 mp = marks.get(symbol, pos.avg_price)
-                pos_pnl = (mp - pos.avg_price) * pos.qty if pos.side == "buy" else (pos.avg_price - mp) * pos.qty
+                pos_pnl = (mp - pos.avg_price) * abs(pos.qty) if pos.side == "buy" else (pos.avg_price - mp) * abs(pos.qty)
         with self._snapshots_lock:
             self._last_snapshots[symbol] = {"price": snap.price, "score": sig.score, "decision": sig.decision, "sentiment": sig.sentiment, "futures_ls": snap.futures_ls, "fear_greed": snap.fear_greed, "pos_qty": pos_qty, "pos_pnl": pos_pnl}
-        if pos and pos.qty > 0:
+        if pos and abs(pos.qty) > 0:
             entry = pos.avg_price
+            abs_qty = abs(pos.qty)
             if pos.side == "buy":
                 if snap.price <= entry * (1 - self.stop_loss_pct):
-                    self._log(f"[yellow]🛑 Stop-loss {symbol} @ ${snap.price:.2f}[/]")
-                    self._tg.send(f"🛑 <b>Stop-loss</b> {symbol}\n├ Entrée : ${entry:.2f}\n└ Sortie : ${snap.price:.2f} ({((snap.price/entry-1)*100):+.2f}%)")
-                    self._execute(symbol, "sell", pos.qty, snap.price); return
+                    self._log(f"[yellow]Stop-loss {symbol} @ ${snap.price:.2f}[/]")
+                    self._tg.send(f"Stop-loss {symbol}\n| Entrée : ${entry:.2f}\n| Sortie : ${snap.price:.2f} ({((snap.price/entry-1)*100):+.2f}%)")
+                    self._execute(symbol, "sell", abs_qty, snap.price); return
                 elif snap.price >= entry * (1 + self.take_profit_pct):
-                    self._log(f"[green]✅ Take-profit {symbol} @ ${snap.price:.2f}[/]")
-                    self._tg.send(f"✅ <b>Take-profit</b> {symbol}\n├ Entrée : ${entry:.2f}\n└ Sortie : ${snap.price:.2f} ({((snap.price/entry-1)*100):+.2f}%)")
-                    self._execute(symbol, "sell", pos.qty, snap.price); return
+                    self._log(f"[green]Take-profit {symbol} @ ${snap.price:.2f}[/]")
+                    self._tg.send(f"Take-profit {symbol}\n| Entrée : ${entry:.2f}\n| Sortie : ${snap.price:.2f} ({((snap.price/entry-1)*100):+.2f}%)")
+                    self._execute(symbol, "sell", abs_qty, snap.price); return
             elif pos.side == "sell":
-                if snap.price >= entry * (1 + self.stop_loss_pct):
-                    self._log(f"[yellow]🛑 Stop-loss short {symbol} @ ${snap.price:.2f}[/]")
-                    self._tg.send(f"🛑 <b>Stop-loss short</b> {symbol}"); self._execute(symbol, "buy", pos.qty, snap.price); return
-                elif snap.price <= entry * (1 - self.take_profit_pct):
-                    self._log(f"[green]✅ Take-profit short {symbol} @ ${snap.price:.2f}[/]")
-                    self._tg.send(f"✅ <b>Take-profit short</b> {symbol}"); self._execute(symbol, "buy", pos.qty, snap.price); return
+                # TP/SL spécifiques pour les shorts (plus serrés)
+                sl_pct = getattr(self, 'short_stop_loss_pct', self.stop_loss_pct)
+                tp_pct = getattr(self, 'short_take_profit_pct', self.take_profit_pct)
+                if snap.price >= entry * (1 + sl_pct):
+                    self._log(f"[yellow]Stop-loss short {symbol} @ ${snap.price:.2f}[/]")
+                    self._tg.send(f"Stop-loss short {symbol}"); self._execute(symbol, "buy", abs_qty, snap.price); return
+                elif snap.price <= entry * (1 - tp_pct):
+                    self._log(f"[green]Take-profit short {symbol} @ ${snap.price:.2f}[/]")
+                    self._tg.send(f"Take-profit short {symbol}"); self._execute(symbol, "buy", abs_qty, snap.price); return
+        # Vérifier le stop-loss global sur l'equity
+        with self._broker_lock:
+            eq_now, _ = self.paper.equity(marks)
+        eq_change = (eq_now / self.initial_capital) - 1.0
+        if eq_change < -self.equity_stop_loss_pct:
+            if not self._stop_triggered:
+                self._stop_triggered = True
+                self._log(f"[bold red]STOP-LOSS GLOBAL DECLENCHÉ ({eq_change*100:.2f}%) - Fermeture de toutes les positions[/]")
+                self._tg.send(f"🔴 STOP-LOSS GLOBAL ({eq_change*100:.2f}%) - Fermeture de toutes les positions")
+                # Fermer toutes les positions
+                with self._broker_lock:
+                    for sym, p in list(self.paper.positions.items()):
+                        if p.qty != 0:
+                            close_side = "sell" if p.side == "buy" else "buy"
+                            self._execute(sym, close_side, abs(p.qty), marks.get(sym, p.avg_price))
+            return
+        self._stop_triggered = False
+
         threshold_long = self.strategy.cfg.threshold_long
         threshold_short = self.strategy.cfg.threshold_short
+
         if sig.decision == "LONG":
             if sig.score < threshold_long: return
             with self._broker_lock:
+                current_open = sum(1 for p in self.paper.positions.values() if p.qty != 0)
+                if current_open >= self.max_concurrent_positions:
+                    return  # Trop de positions ouvertes
                 already_long = (pos := self.paper.positions.get(symbol)) and pos.qty > 0 and pos.side == "buy"
-            if already_long: return
+                if already_long: return
             if self.validate_signals:
                 fut = self._llm_executor.submit(self.llm.validate, {"score": sig.score, "momentum": sig.momentum, "sentiment": sig.sentiment, "fear_greed": sig.fear_greed}, "buy")
                 try:
@@ -403,13 +454,15 @@ class TradingAgent:
             notional = self._position_size(symbol, snap.price, vol)
             qty = round(notional / snap.price, 6)
             if qty > 0:
-                self._log(f"[bold green]📊 LONG {symbol} @ ${snap.price:.2f} (qty={qty})[/] mom={sig.momentum:+.3f} score={sig.score:+.3f}")
+                self._log(f"[bold green]LONG {symbol} @ ${snap.price:.2f} (qty={qty})[/] mom={sig.momentum:+.3f} score={sig.score:+.3f}")
                 self._execute(symbol, "buy", qty, snap.price)
         elif sig.decision == "SHORT":
-            if sig.score > threshold_short: return
             with self._broker_lock:
-                already_short = (pos := self.paper.positions.get(symbol)) and pos.qty > 0 and pos.side == "sell"
-            if already_short: return
+                current_open = sum(1 for p in self.paper.positions.values() if p.qty != 0)
+                if current_open >= self.max_concurrent_positions:
+                    return  # Trop de positions ouvertes
+                already_short = (pos := self.paper.positions.get(symbol)) and pos.qty != 0 and pos.side == "sell"
+                if already_short: return
             if self.validate_signals:
                 fut = self._llm_executor.submit(self.llm.validate, {"score": sig.score, "momentum": sig.momentum, "sentiment": sig.sentiment, "fear_greed": sig.fear_greed}, "sell")
                 try:
@@ -419,23 +472,44 @@ class TradingAgent:
             notional = self._position_size(symbol, snap.price, vol)
             qty = round(notional / snap.price, 6)
             if qty > 0:
-                self._log(f"[bold red]📊 SHORT {symbol} @ ${snap.price:.2f} (qty={qty})[/]")
+                self._log(f"[bold red]SHORT {symbol} @ ${snap.price:.2f} (qty={qty})[/]")
                 self._execute(symbol, "sell", qty, snap.price)
         elif sig.decision == "FLAT":
             with self._broker_lock:
                 pos = self.paper.positions.get(symbol)
-                if pos and pos.qty > 0:
-                    close_side = "sell" if pos.side == "buy" else "buy"; qty = pos.qty; avg_price = pos.avg_price
+                if pos and abs(pos.qty) > 0:
+                    close_side = "sell" if pos.side == "buy" else "buy"; qty = abs(pos.qty); avg_price = pos.avg_price
                 else: qty = 0; close_side = "sell"; avg_price = 0.0
             if qty > 0:
-                self._log(f"[dim]↩️ Fermeture {symbol} ({qty} @ ${avg_price:.2f}) — FLAT[/]")
+                self._log(f"[dim]Fermeture {symbol} ({qty} @ ${avg_price:.2f}) - FLAT[/]")
                 self._execute(symbol, close_side, qty, snap.price)
+
+    def _select_active_universe(self, max_actifs: int = 10) -> list[str]:
+        """Garde les positions ouvertes + les actifs les plus volatils de la watchlist."""
+        with self._broker_lock:
+            open_symbols = {s for s, p in self.paper.positions.items() if p.qty != 0 and s in self.s.universe}
+        # Récupère la volatilité de tous les actifs de la watchlist
+        vol_scores: list[tuple[float, str]] = []
+        for sym in self.s.universe:
+            entry = _vol_cache.get(sym)
+            vol = entry["vol"] if entry else 0.05
+            vol_scores.append((vol, sym))
+        # Trier par volatilité décroissante
+        vol_scores.sort(key=lambda x: x[0], reverse=True)
+        selected = list(open_symbols)
+        for vol, sym in vol_scores:
+            if sym not in selected:
+                selected.append(sym)
+            if len(selected) >= max_actifs:
+                break
+        return selected[:max_actifs]
 
     @LOOP_DURATION.time()
     def step(self) -> None:
+        active = self._select_active_universe(max_actifs=10)
         marks: dict[str, float] = {}
         marks_lock = threading.Lock()
-        futures = {self._snap_executor.submit(self._process_symbol, sym, marks, marks_lock): sym for sym in self.s.universe}
+        futures = {self._snap_executor.submit(self._process_symbol, sym, marks, marks_lock): sym for sym in active}
         from concurrent.futures import wait
         done, _ = wait(list(futures.keys()), timeout=120)
         for fut in done:
@@ -454,23 +528,24 @@ class TradingAgent:
         console.print(self._build_display())
 
     def run_forever(self) -> None:
-        self._log(f"[green]Agent démarré — mode={self.mode} exchange={self.s.exchange}[/]")
+        self._log(f"[green]Agent démarré - mode={self.mode} exchange={self.s.exchange}[/]")
         try:
-            self._tg_notifier.start()
-            self._tg.send(f"🚀 <b>Agent démarré</b>\n├ Mode : {self.mode}\n├ Universe : {len(self.s.universe)} actifs\n├ Capital initial : ${self.initial_capital:,.0f}\n├ Seuil LONG : {self.strategy.cfg.threshold_long:+.3f}\n├ Seuil SHORT : {self.strategy.cfg.threshold_short:+.3f}\n├ TP : {self.take_profit_pct*100:.0f}% / SL : {self.stop_loss_pct*100:.0f}%\n└ Résumé toutes les {self._summary_interval} min")
+            # Démarrage Telegram sans polling (envoi uniquement)
+            if self._tg_notifier.token and self._tg_notifier.chat_id:
+                self._tg.send(f"Agent démarré\n| Mode : {self.mode}\n| Universe : {len(self.s.universe)} actifs\n| Capital initial : ${self.initial_capital:,.0f}\n| Seuil LONG : {self.strategy.cfg.threshold_long:+.3f}\n| Seuil SHORT : {self.strategy.cfg.threshold_short:+.3f}\n| TP : {self.take_profit_pct*100:.0f}% / SL : {self.stop_loss_pct*100:.0f}%\n| Résumé toutes les {self._summary_interval} min")
             while True:
                 self.step()
                 self._step_count += 1
                 if self._step_count % self._summary_steps == 0: self._send_telegram_summary()
                 time.sleep(self.s.loop_interval)
         except KeyboardInterrupt:
-            self._tg.send("🛑 <b>Agent arrêté</b> (Ctrl+C)")
+            self._tg.send("Agent arrêté (Ctrl+C)")
             self._tg.stop(); self._tg_notifier.stop()
             self._log("[yellow]Arrêt demandé par l'utilisateur[/]")
-            console.print("\n[bold yellow]═══ Résumé final ═══[/]")
+            console.print("\n[bold yellow]=== Résumé final ===[/]")
             with self._broker_lock:
                 eq, _ = self.paper.equity({s: d.get("price", 0) for s, d in self._last_snapshots.items()})
                 rpnl = self.paper.realized_pnl; ntrades = len(self.paper.trades)
-            console.print(f"Capital final: ${eq:.2f}")
-            console.print(f"P&L réalisé: ${rpnl:.2f}")
-            console.print(f"Trades: {ntrades}")
+            console.print(f"Capital final : ${eq:.2f}")
+            console.print(f"P&L réalisé : ${rpnl:.2f}")
+            console.print(f"Trades : {ntrades}")

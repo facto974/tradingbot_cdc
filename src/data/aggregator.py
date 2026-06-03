@@ -206,7 +206,7 @@ class DataAggregator:
         self.reddit_subs  = reddit_subs
         self.reddit_limit = reddit_limit
 
-    def snapshot(self, symbol: str, period: str = "60d", interval: str = "1h") -> MarketSnapshot:
+    def snapshot(self, symbol: str, period: str = "1d", interval: str = "1m") -> MarketSnapshot:
         """Collecte toutes les sources en parallèle (sans imbrication d'executors)."""
         norm = _normalize(symbol)  # AAVEUSD → AAVE-USD
 

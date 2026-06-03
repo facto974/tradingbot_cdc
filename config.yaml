@@ -2,102 +2,55 @@ mode: paper
 exchange: crypto_com
 loop_interval: 60
 universe:
-- AAVE-USD
-- AMP-USD
-- APE-USD
-- ARB-USD
-- ATOM-USD
-- AUD-USD
-- AVAX-USD
-- BAT-USD
-- BCH-USD
-- BNB-USD
-- BONK-USD
-- BTC-USD
-- CRV-USD
-- DAI-USD
-- DOGE-USD
-- DOT-USD
-- DRIFT-USD
-- ENS-USD
-- ETH-USD
-- EUL-USD
-- FARTCOIN-USD
-- FET-USD
-- FIL-USD
-- FTM-USD
-- GALA-USD
-- GRT-USD
-- HNT-USD
-- HYPE-USD
-- IMX-USD
-- INJ-USD
-- JTO-USD
-- JUP-USD
-- KMNO-USD
-- LINK-USD
-- LTC-USD
-- MANA-USD
-- OP-USD
-- PEPE-USD
-- POL-USD
-- PYTH-USD
-- QNT-USD
-- RNDR-USD
-- SAND-USD
-- SHIB-USD
-- SKL-USD
-- SKY-USD
-- SOL-USD
-- SUI-USD
-- TON-USD
-- TRUMP-USD
-- TRX-USD
-- UMA-USD
-- UNI-USD
-- WCT-USD
-- WIF-USD
-- WLD-USD
-- WLFI-USD
-- XRP-USD
-- XTZ-USD
-- YFI-USD
-- ZEC-USD
+  - BTC-USD
+  - SOL-USD
+  - ETH-USD
+  - SUI-USD
+  - DOGE-USD
+  - LINK-USD
+  - AVAX-USD
 strategy:
   weights:
-    momentum: 0.35
-    sentiment: 0.45
-    fear_greed: 0.2
+    momentum: 0.70
+    sentiment: 0.10
+    fear_greed: 0.20
   momentum:
-    lookback_days: 14
-    ema_smooth: 24
+    lookback_days: 5
+    ema_smooth: 12
+    enable_trend_filter: false
+    sma_fast: 50
+    sma_slow: 200
   thresholds:
-    long: 0.3
-    short: -0.3
-    close_threshold: -0.1
+    long: 0.05
+    short: -0.05
+    close_threshold: -0.15
+    close_short_threshold: 0.05
   sentiment:
     high_conviction: false
-    min_active_sources: 2
-    require_aligned: true
-    min_momentum_abs: 0.1
+    min_active_sources: 1
+    require_aligned: false
+    min_momentum_abs: 0.01
     reddit_subs:
-    - CryptoCurrency
-    - CryptoMarkets
-    - altcoin
+      - CryptoCurrency
+      - CryptoMarkets
+      - altcoin
     reddit_limit: 50
 risk:
-  allow_short: false
+  allow_short: true
   initial_capital: 100
-  max_position_usd: 20
-  kelly_fraction: 0.25
+  max_position_usd: 80
+  kelly_fraction: 1.0
   stop_loss_pct: 0.03
-  take_profit_pct: 0.06
+  take_profit_pct: 0.04
+  short_stop_loss_pct: 0.025
+  short_take_profit_pct: 0.035
+  max_concurrent_positions: 2
+  equity_stop_loss_pct: 0.15
 llm:
   validate_signals: false
-  model: openai/gpt-4o-mini
+  model: deepseek/deepseek-v4-flash
   temperature: 0.2
-telegram:
-  summary_interval_min: 10
+telegram: {}
 metrics:
   enabled: true
   port: 8000

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import threading
+
 import numpy as np
 import pandas as pd
 
@@ -29,16 +31,17 @@ from . import indicators as ind
 
 @dataclass
 class StrategyConfig:
-    w_momentum:   float = 0.35
-    w_sentiment:  float = 0.45
-    w_fear_greed: float = 0.20
+    w_momentum:   float = 0.60
+    w_sentiment:  float = 0.15
+    w_fear_greed: float = 0.25
 
-    lookback:   int = 14        # jours/barres pour le calcul du momentum
-    ema_smooth: int = 24        # EMA lissage du prix
+    lookback:   int = 21        # jours/barres pour le calcul du momentum
+    ema_smooth: int = 34        # EMA lissage du prix
 
-    threshold_long:  float = 0.0    # score >= 0 → LONG
-    threshold_short: float = -0.30  # score <= -0.30 → SHORT
-    close_threshold: float = -0.10  # score < -0.10 ferme une position LONG
+    threshold_long:  float = 0.45    # score >= 0.45 → LONG (signaux forts uniquement)
+    threshold_short: float = -0.40   # score <= -0.40 → SHORT
+    close_threshold: float = -0.15   # score < -0.15 ferme une position LONG
+    close_short_threshold: float = -0.55  # score > -0.55 ferme une position SHORT
 
     allow_short:     bool  = False
 
@@ -50,6 +53,12 @@ class StrategyConfig:
     require_aligned: bool = True
     # Seuil minimum de momentum en valeur absolue pour considérer un signal
     min_momentum_abs: float = 0.10
+
+    # Filtre de tendance macro (SMA rapide / SMA lente)
+    # Si enable_trend_filter=True et sma_fast < sma_slow → pas de LONG (bear market)
+    enable_trend_filter: bool = True
+    sma_fast: int = 50
+    sma_slow: int = 200
 
     # Poids relatifs des sous-sources dans le bloc "sentiment"
     sentiment_weights: dict[str, float] | None = None
@@ -108,8 +117,6 @@ class MomentumSentimentStrategy:
     def __init__(self, cfg: StrategyConfig):
         self.cfg          = cfg
         self.sent_weights = {**DEFAULT_SENT_WEIGHTS, **(cfg.sentiment_weights or {})}
-        # Mémoire des décisions précédentes pour éviter les allers-retours
-        self._prev_decision: str = "FLAT"
 
     # ── API live : prend un snapshot agrégé ───────────────────
 
@@ -122,8 +129,21 @@ class MomentumSentimentStrategy:
         fear_greed:     float | None,
         binance_change: float | None = None,
         binance_taker:  float | None = None,
+        symbol:         str = "",
+        position_side:  str = "",    # "buy", "sell", ou "" = pas de position
     ) -> Signal:
         """Calcule le signal live avec re-pondération dynamique des sources."""
+
+        # ── Tendance macro (SMA fast / SMA slow) ────────────
+        trend_ok = True  # Par défaut, on laisse passer
+        if self.cfg.enable_trend_filter and ohlcv is not None and not ohlcv.empty and "Close" in ohlcv.columns:
+            closes = ohlcv["Close"].dropna()
+            if len(closes) >= self.cfg.sma_slow:
+                sma_fast = closes.rolling(self.cfg.sma_fast).mean().iloc[-1]
+                sma_slow = closes.rolling(self.cfg.sma_slow).mean().iloc[-1]
+                # Si SMA rapide < SMA lente → bear market → PAS de LONG
+                if sma_fast < sma_slow:
+                    trend_ok = False
 
         # ── Momentum ──────────────────────────────────────────
         if ohlcv is None or ohlcv.empty or "Close" not in ohlcv.columns:
@@ -210,13 +230,26 @@ class MomentumSentimentStrategy:
 
         else:
             # ── Mode normal avec close_threshold ────────────
-            # Décision d'ouverture
-            if self._prev_decision == "LONG" and score > self.cfg.close_threshold:
-                # Garder la position ouverte si le score n'a pas assez baissé
-                decision = "HOLD"
+            # Utilise position_side passé par le broker (thread-safe)
+            # pour savoir si on a déjà une position ouverte
+
+            # Si déjà en position SHORT : HOLD si score reste baissier, FLAT si remontée
+            if position_side == "sell":
+                # Utilise close_short_threshold spécifique aux shorts
+                close_s = self.cfg.close_short_threshold
+                if score > close_s:
+                    decision = "FLAT"  # score remonté → fermer le short
+                else:
+                    decision = "HOLD"   # score toujours très baissier → garder
+            # Si déjà en position LONG : HOLD si score OK, FLAT sinon
+            elif position_side == "buy":
+                if score > self.cfg.close_threshold:
+                    decision = "HOLD"
+                else:
+                    decision = "FLAT"
+            # Pas de position : ouvrir selon les signaux
             elif score >= self.cfg.threshold_long:
-                # Ouverture LONG si aligné
-                if aligned or not self.cfg.require_aligned:
+                if (aligned or not self.cfg.require_aligned) and trend_ok:
                     decision = "LONG"
                 else:
                     decision = "FLAT"
@@ -227,10 +260,6 @@ class MomentumSentimentStrategy:
                     decision = "FLAT"
             else:
                 decision = "FLAT"
-
-        # Mémoriser la décision pour le prochain cycle
-        if decision in ("LONG", "SHORT", "FLAT"):
-            self._prev_decision = decision
 
         all_active = (
             (["momentum"] if mom_score is not None else [])

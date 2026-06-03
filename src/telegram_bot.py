@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+import threading
 
 import telegram
 from telegram import Bot, Update
@@ -21,47 +22,59 @@ class TelegramNotifier:
         await notifier.send("📈 Trade exécuté")   # notification
         notifier.stop()             # arrête le polling
     """
-
+    
     def __init__(self, token: str, chat_id: str, agent=None):
         self.token = token
         self.chat_id = chat_id
-        self.agent = agent  # référence au TradingAgent pour les commandes
+        self.agent = agent
         self._app: Application | None = None
+        self._thread: threading.Thread | None = None
+        self._started = False          # ← garde anti-double démarrage
         self._loop: asyncio.AbstractEventLoop | None = None
 
     # ── Démarrage / Arrêt ────────────────────────────────────
 
     def start(self) -> None:
-        """Démarre le polling Telegram en arrière-plan."""
+        if self._started:              # ← bloque tout second appel
+            logger.warning("Telegram déjà démarré, appel ignoré")
+            return
         if not self.token or not self.chat_id:
             logger.info("Telegram désactivé : token ou chat_id manquant")
             return
         try:
             self._app = Application.builder().token(self.token).build()
             self._register_handlers()
-            self._loop = asyncio.new_event_loop()
-            self._loop.run_in_executor(None, self._poll_forever)
+            self._started = True
+            # Thread daemon = s'arrête automatiquement si le process principal meurt
+            self._thread = threading.Thread(target=self._poll_forever, daemon=True)
+            self._thread.start()
             logger.info("Telegram bot démarré")
         except Exception as e:
+            self._started = False
             logger.warning("Impossible de démarrer Telegram : %s", e)
 
     def stop(self) -> None:
-        """Arrête le polling."""
-        if self._app:
-            try:
-                if self._loop and self._loop.is_running():
-                    self._loop.call_soon_threadsafe(self._app.stop)
-                else:
-                    asyncio.run_coroutine_threadsafe(
-                        self._app.stop(), self._loop
-                    ) if self._loop else None
-            except Exception:
-                pass
+        if not self._app or not self._started:
+            return
+        self._started = False
+        try:
+            # Arrêt propre via run_coroutine_threadsafe depuis l'extérieur du loop
+            if self._loop and self._loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(
+                    self._app.updater.stop(), self._loop
+                )
+                future.result(timeout=5)
+        except Exception as e:
+            logger.warning("Erreur à l'arrêt Telegram : %s", e)
+        finally:
             self._app = None
+            if self._thread:
+                self._thread.join(timeout=5)
+                self._thread = None
             logger.info("Telegram bot arrêté")
 
     def _poll_forever(self) -> None:
-        """Boucle polling exécutée dans un thread dédié."""
+        self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         self._app.run_polling(allowed_updates=Update.ALL_TYPES)
 
@@ -107,8 +120,8 @@ class TelegramNotifier:
                 f"├ Universe : {len(agent.s.universe)} actifs\n"
                 f"├ Cash : ${cash:.2f}\n"
                 f"├ Equity : ${equity:.2f}\n"
-                f"├ P&L Réel : ${realized:+.2f}\n"
-                f"├ P&L Non-réel : ${unreal:+.2f}\n"
+                f"├ P&L Réalisé : ${realized:+.2f}\n"
+                f"├ P&L Non-réalisé : ${unreal:+.2f}\n"
                 f"├ Positions : {pos_count}\n"
                 f"└ Trades : {len(agent.paper.trades)}"
             )
@@ -172,7 +185,7 @@ class TelegramNotifier:
                 full_sym = s
                 break
         if not full_sym:
-            await self._reply(update, f"❌ Symbole {sym_raw} introuvable dans l'universe")
+            await self._reply(update, f"❌ Symbole {sym_raw} introuvable dans l'univers")
             return
         pos = self.agent.paper.positions.get(full_sym)
         if not pos or pos.qty == 0:
