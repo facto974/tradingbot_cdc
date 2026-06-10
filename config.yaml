@@ -3,27 +3,63 @@ exchange: crypto_com
 loop_interval: 60
 universe:
   - BTC-USD
-  - SOL-USD
   - ETH-USD
-  - SUI-USD
+  - SOL-USD
+  - BNB-USD
+  - XRP-USD
   - DOGE-USD
-  - LINK-USD
+  - ADA-USD
   - AVAX-USD
+  - LINK-USD
+  - SUI-USD
+  - TON-USD
+  - DOT-USD
+  - MATIC-USD
+  - TRX-USD
+  - SHIB-USD
+  - LTC-USD
+  - BCH-USD
+  - ATOM-USD
+  - UNI-USD
+  - XLM-USD
+  - VET-USD
+  - ICP-USD
+  - FIL-USD
+  - APT-USD
+  - ARB-USD
+  - OP-USD
+  - NEAR-USD
+  - ALGO-USD
+  - HBAR-USD
+  - EOS-USD
+  - ETC-USD
+  - PEPE-USD
+  - INJ-USD
+  - FET-USD
+  - GRT-USD
+  - RNDR-USD
+  - RUNE-USD
+  - XTZ-USD
+  - ZIL-USD
+  - TIA-USD
+  - WIF-USD
+  - POL-USD
+  - FTM-USD
 strategy:
   weights:
     momentum: 0.70
     sentiment: 0.10
     fear_greed: 0.20
   momentum:
-    lookback_days: 5
-    ema_smooth: 12
+    lookback_days: 3
+    ema_smooth: 8
     enable_trend_filter: false
     sma_fast: 50
     sma_slow: 200
   thresholds:
     long: 0.05
-    short: -0.05
-    close_threshold: -0.15
+    short: -0.10
+    close_threshold: -0.30
     close_short_threshold: 0.05
   sentiment:
     high_conviction: false
@@ -40,12 +76,13 @@ risk:
   initial_capital: 100
   max_position_usd: 80
   kelly_fraction: 1.0
-  stop_loss_pct: 0.03
-  take_profit_pct: 0.04
-  short_stop_loss_pct: 0.025
-  short_take_profit_pct: 0.035
+  stop_loss_pct: 0.04
+  take_profit_pct: 0.06
+  short_stop_loss_pct: 0.04
+  short_take_profit_pct: 0.06
   max_concurrent_positions: 2
   equity_stop_loss_pct: 0.15
+  cooldown_after_sl_min: 15
 llm:
   validate_signals: false
   model: deepseek/deepseek-v4-flash

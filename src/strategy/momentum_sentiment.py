@@ -332,7 +332,7 @@ class MomentumSentimentStrategy:
             position[close_short] = 0
 
         # Forward-fill les positions pour garder la position tant qu'elle n'est pas fermée
-        position = position.replace(0, method="ffill").fillna(0)
+        position = position.replace(0, method="ffill").fillna(0).astype(int)
 
         return pd.DataFrame({
             "score":      score,
