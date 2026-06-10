@@ -150,7 +150,7 @@ class TradingAgent:
             reddit_limit=sent_cfg.get("reddit_limit", 50),
         )
 
-        self.initial_capital = float(risk.get("initial_capital", 10000.0))
+        self.initial_capital = float(risk.get("initial_capital", 100.0))
         self.mode = cfg.get("mode", "paper")
         self.paper = PaperBroker(initial_cash=self.initial_capital)
         self._broker_lock = threading.Lock()

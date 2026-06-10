@@ -30,14 +30,29 @@ class PaperBroker:
         pnl = 0.0
 
         if side.lower() == "buy":
-            new_qty = pos.qty + qty
-            if new_qty != 0:
-                pos.avg_price = (pos.avg_price * pos.qty + qty * price) / new_qty
-            pos.qty = new_qty
-            pos.side = "buy" if pos.qty > 0 else ""
-            self.cash -= notional + fee
+            if pos.qty < 0:
+                # Fermer ou réduire un SHORT : buy back
+                close_qty = min(qty, abs(pos.qty))
+                pnl = (pos.avg_price - price) * close_qty - fee
+                pos.qty += close_qty
+                self.realized_pnl += pnl
+                self.cash += (close_qty * pos.avg_price) - notional - fee
+                if pos.qty == 0:
+                    pos.side = ""
+                    pos.avg_price = 0.0
+                else:
+                    pos.side = "sell"
+            else:
+                # Ouvrir ou augmenter un LONG
+                new_qty = pos.qty + qty
+                if new_qty != 0:
+                    pos.avg_price = (pos.avg_price * pos.qty + qty * price) / new_qty
+                pos.qty = new_qty
+                pos.side = "buy" if pos.qty > 0 else ""
+                self.cash -= notional + fee
         else:  # sell
             if pos.qty > 0:
+                # Fermer ou réduire un LONG
                 close_qty = min(qty, pos.qty)
                 pnl = (price - pos.avg_price) * close_qty - fee
                 pos.qty -= close_qty
@@ -45,10 +60,12 @@ class PaperBroker:
                 if pos.qty == 0:
                     pos.side = ""
             else:
-                # Short position
-                pos.qty -= qty
-                pos.avg_price = price
-                pos.side = "sell"
+                # Ouvrir ou augmenter un SHORT
+                new_qty = pos.qty - qty
+                if new_qty != 0:
+                    pos.avg_price = (pos.avg_price * abs(pos.qty) + qty * price) / abs(new_qty)
+                pos.qty = new_qty
+                pos.side = "sell" if pos.qty < 0 else ""
             self.cash += notional - fee
 
         trade = {"symbol": symbol, "side": side, "qty": qty, "price": price,
