@@ -574,6 +574,9 @@ class TradingAgent:
         console.print(self._build_display())
 
     def run_forever(self) -> None:
+        # Démarrer Telegram si configuré
+        if self._tg_notifier.token and self._tg_notifier.chat_id:
+            self._tg_notifier.start()
         self._log(f"[green]Agent démarré - mode={self.mode} exchange={self.s.exchange}[/]")
         try:
             if self._tg_notifier.token and self._tg_notifier.chat_id:
