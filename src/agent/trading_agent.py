@@ -512,27 +512,30 @@ class TradingAgent:
 
     @LOOP_DURATION.time()
     def step(self) -> None:
-        # Sélectionner les 3 meilleurs shorts (positions ouvertes + scores les plus baissiers)
-        # Au premier cycle, les scores sont vides → on scanne tout l'universe
+        # Calculer les scores de tous les actifs
         scored = []
         for sym in self.s.universe:
             snap = self._last_snapshots.get(sym, {})
             score = snap.get("score") if snap.get("score") is not None else 0
             scored.append((score, sym))
-        scored.sort(key=lambda x: x[0])
+        scored.sort(key=lambda x: x[0])  # croissant: plus baissiers en premier
 
         with self._broker_lock:
             open_symbols = {s for s, p in self.paper.positions.items() if p.qty != 0 and s in self.s.universe}
+
+        # Sélectionner les 3 meilleures opportunités (shorts + longs)
+        # Prend les 2 plus baissiers (shorts) + les 2 plus haussiers (longs)
+        worst = [s for s in scored if s[0] < -0.05][:2]   # shorts
+        best = [s for s in reversed(scored) if s[0] > 0.05][:2]  # longs
         active = list(open_symbols)
-        for score, sym in scored:
+        for score, sym in worst + best:
             if sym not in active:
                 active.append(sym)
             if len(active) >= 3:
                 break
         active = active[:3]
 
-        # Scanner les actifs sélectionnés + compléter le cache pour les autres
-        # (les sources avec cache TTL ne referont pas d'appels API)
+        # Scanner les actifs sélectionnés
         marks: dict[str, float] = {}
         marks_lock = threading.Lock()
         # Priorité : les 3 actifs sélectionnés
