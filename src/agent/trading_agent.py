@@ -512,17 +512,48 @@ class TradingAgent:
 
     @LOOP_DURATION.time()
     def step(self) -> None:
-        active = self._select_active_universe(max_actifs=3)
+        # Sélectionner les 3 meilleurs shorts (positions ouvertes + scores les plus baissiers)
+        # Au premier cycle, les scores sont vides → on scanne tout l'universe
+        scored = []
+        for sym in self.s.universe:
+            snap = self._last_snapshots.get(sym, {})
+            score = snap.get("score") if snap.get("score") is not None else 0
+            scored.append((score, sym))
+        scored.sort(key=lambda x: x[0])
+
+        with self._broker_lock:
+            open_symbols = {s for s, p in self.paper.positions.items() if p.qty != 0 and s in self.s.universe}
+        active = list(open_symbols)
+        for score, sym in scored:
+            if sym not in active:
+                active.append(sym)
+            if len(active) >= 3:
+                break
+        active = active[:3]
+
+        # Scanner les actifs sélectionnés + compléter le cache pour les autres
+        # (les sources avec cache TTL ne referont pas d'appels API)
         marks: dict[str, float] = {}
         marks_lock = threading.Lock()
-        futures = {self._snap_executor.submit(self._process_symbol, sym, marks, marks_lock): sym for sym in active}
+        # Priorité : les 3 actifs sélectionnés
+        all_to_scan = list(active)
+        # On ajoute aussi les positions ouvertes qui auraient été filtrées
+        for sym in scored[:5]:
+            if sym[1] not in all_to_scan:
+                all_to_scan.append(sym[1])
+        for sym in open_symbols:
+            if sym not in all_to_scan:
+                all_to_scan.append(sym)
+
+        futures = {self._snap_executor.submit(self._process_symbol, sym, marks, marks_lock): sym for sym in all_to_scan}
         from concurrent.futures import wait
-        done, _ = wait(list(futures.keys()), timeout=120)
+        done, _ = wait(list(futures.keys()), timeout=180)
         for fut in done:
             try:
                 fut.result()
             except Exception:
                 ERRORS.labels(component="step").inc()
+
         with self._broker_lock:
             equity, unreal = self.paper.equity(marks)
             rpnl = self.paper.realized_pnl
