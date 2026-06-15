@@ -73,9 +73,6 @@ def _normalize(symbol: str) -> str:
     if s.endswith("USD"):
         base = s[:-3]
         return f"{base}-USD"
-    if s.endswith("USD"):
-        base = s[:-4]
-        return f"{base}-USD"
     if s.endswith("EUR"):
         base = s[:-3]
         return f"{base}-EUR"

@@ -84,7 +84,7 @@ class Settings:
         s.mode = cfg.get("mode", s.mode)
         s.exchange = cfg.get("exchange", s.exchange)
         s.universe = cfg.get("universe", s.universe)
-        s.loop_interval = int(cfg.get("loop_interval_sec", s.loop_interval))
+        s.loop_interval = int(cfg.get("loop_interval", s.loop_interval))
 
         strat = cfg.get("strategy", {})
         s.strategy_weights = strat.get("weights", {})

@@ -202,7 +202,7 @@ class TradingAgent:
         self._summary_steps = self._summary_interval * 60 // max(1, self.s.loop_interval)
         self._last_summary_hash: str | None = None
 
-        self._snap_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="snap")
+        self._snap_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="snap")
 
     def _restore_positions(self) -> None:
         rows = self.db.load_positions()
@@ -559,9 +559,9 @@ class TradingAgent:
         console.log(f"[dim]Scores: bear=[/][red]{log_bear}[/][dim] bull=[/][green]{log_bull}[/]")
         console.log(f"[cyan]Selected: {log_sel}[/]")
 
-        # Étape 4 : rescanner uniquement les 3 sélectionnés, cette fois avec trades
-        active_set = set(active)
-        trade_futures = {self._snap_executor.submit(self._process_symbol, sym, marks, marks_lock, readonly=False): sym for sym in active_set}
+        # Étape 4 : rescanner les symboles à trader + positions ouvertes (pour SL/TP)
+        trade_set = set(active) | open_symbols
+        trade_futures = {self._snap_executor.submit(self._process_symbol, sym, marks, marks_lock, readonly=False): sym for sym in trade_set}
         if trade_futures:
             done2, _ = wait(list(trade_futures.keys()), timeout=120)
             for fut in done2:
