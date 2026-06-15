@@ -521,9 +521,9 @@ class TradingAgent:
     @LOOP_DURATION.time()
     def step(self) -> None:
         # Étape 1 : scanner TOUS les symboles en readonly pour collecter les scores
-        marks: dict[str, float] = {}
+        all_marks: dict[str, float] = {}
         marks_lock = threading.Lock()
-        all_futures = {self._snap_executor.submit(self._process_symbol, sym, marks, marks_lock, readonly=True): sym for sym in self.s.universe}
+        all_futures = {self._snap_executor.submit(self._process_symbol, sym, all_marks, marks_lock, readonly=True): sym for sym in self.s.universe}
         from concurrent.futures import wait
         done, _ = wait(list(all_futures.keys()), timeout=300)
         for fut in done:
@@ -560,8 +560,10 @@ class TradingAgent:
         console.log(f"[cyan]Selected: {log_sel}[/]")
 
         # Étape 4 : rescanner les symboles à trader + positions ouvertes (pour SL/TP)
+        # On utilise un nouveau dict pour éviter la data race avec le scan readonly
+        trade_marks: dict[str, float] = dict(all_marks)
         trade_set = set(active) | open_symbols
-        trade_futures = {self._snap_executor.submit(self._process_symbol, sym, marks, marks_lock, readonly=False): sym for sym in trade_set}
+        trade_futures = {self._snap_executor.submit(self._process_symbol, sym, trade_marks, marks_lock, readonly=False): sym for sym in trade_set}
         if trade_futures:
             done2, _ = wait(list(trade_futures.keys()), timeout=120)
             for fut in done2:
@@ -569,6 +571,7 @@ class TradingAgent:
                     fut.result()
                 except Exception:
                     ERRORS.labels(component="step").inc()
+        marks = trade_marks
 
         with self._broker_lock:
             equity, unreal = self.paper.equity(marks)
