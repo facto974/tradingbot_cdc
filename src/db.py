@@ -102,7 +102,7 @@ class Database:
         with self._conn() as c:
             c.execute("DELETE FROM positions")
             for symbol, pos in positions.items():
-                if pos.qty > 0:
+                if pos.qty != 0:
                     c.execute(
                         "INSERT OR REPLACE INTO positions (symbol, side, qty, avg_price, ts)"
                         " VALUES (?,?,?,?,?)",
@@ -113,7 +113,7 @@ class Database:
         """Recharge les positions persistées. Retourne [(symbol, side, qty, avg_price)]. """
         with self._conn() as c:
             cur = c.execute(
-                "SELECT symbol, side, qty, avg_price FROM positions WHERE qty > 0"
+                "SELECT symbol, side, qty, avg_price FROM positions WHERE qty != 0"
             )
             return cur.fetchall()
 

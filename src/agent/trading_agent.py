@@ -211,9 +211,15 @@ class TradingAgent:
             pos = Position(symbol=symbol, side=side, qty=qty, avg_price=avg_price)
             self.paper.positions[symbol] = pos
         if rows:
-            total_invested = sum(abs(p.qty) * p.avg_price for p in self.paper.positions.values() if abs(p.qty) > 0)
-            self.paper.cash -= total_invested
-            self._log(f"[dim]{len(rows)} position(s) restaurée(s) ({total_invested:.2f}$ investis) depuis la BDD[/]")
+            # Recalculer le cash : les longs ont coûté, les shorts ont rapporté
+            cash_adjust = 0.0
+            for p in self.paper.positions.values():
+                if p.qty > 0:  # long → on a payé
+                    cash_adjust -= p.qty * p.avg_price
+                elif p.qty < 0:  # short → on a reçu
+                    cash_adjust += abs(p.qty) * p.avg_price
+            self.paper.cash += cash_adjust
+            self._log(f"[dim]{len(rows)} position(s) restaurée(s) (cash ajusté de {cash_adjust:+.2f}$) depuis la BDD[/]")
 
     def _log(self, msg: str) -> None:
         console.log(msg)
@@ -343,7 +349,7 @@ class TradingAgent:
         diversification_factor = max(0.3, 1.0 - open_count * 0.25)
         return max_notional * vol_factor * diversification_factor
 
-    def _process_symbol(self, symbol: str, marks: dict[str, float], marks_lock: threading.Lock) -> None:
+    def _process_symbol(self, symbol: str, marks: dict[str, float], marks_lock: threading.Lock, readonly: bool = False) -> None:
         try:
             snap = self.aggregator.snapshot(symbol)
         except Exception as e:
@@ -378,6 +384,8 @@ class TradingAgent:
                 pos_pnl = (mp - pos.avg_price) * abs(pos.qty) if pos.side == "buy" else (pos.avg_price - mp) * abs(pos.qty)
         with self._snapshots_lock:
             self._last_snapshots[symbol] = {"price": snap.price, "score": sig.score, "decision": sig.decision, "sentiment": sig.sentiment, "futures_ls": snap.futures_ls, "fear_greed": snap.fear_greed, "pos_qty": pos_qty, "pos_pnl": pos_pnl}
+        if readonly:
+            return  # juste collecter les scores, pas de trade
         if pos and abs(pos.qty) > 0:
             entry = pos.avg_price
             abs_qty = abs(pos.qty)
@@ -512,50 +520,46 @@ class TradingAgent:
 
     @LOOP_DURATION.time()
     def step(self) -> None:
-        # Calculer les scores de tous les actifs
-        scored = []
-        for sym in self.s.universe:
-            snap = self._last_snapshots.get(sym, {})
-            score = snap.get("score") if snap.get("score") is not None else 0
-            scored.append((score, sym))
-        scored.sort(key=lambda x: x[0])  # croissant: plus baissiers en premier
+        # Étape 1 : scanner TOUS les symboles en readonly pour collecter les scores
+        marks: dict[str, float] = {}
+        marks_lock = threading.Lock()
+        all_futures = {self._snap_executor.submit(self._process_symbol, sym, marks, marks_lock, readonly=True): sym for sym in self.s.universe}
+        from concurrent.futures import wait
+        done, _ = wait(list(all_futures.keys()), timeout=300)
+        for fut in done:
+            try:
+                fut.result()
+            except Exception:
+                ERRORS.labels(component="step").inc()
+
+        # Étape 2 : trier les 43 par score
+        scored = [(self._last_snapshots.get(sym, {}).get("score") or 0, sym) for sym in self.s.universe]
+        scored.sort(key=lambda x: x[0])  # croissant: les + baissiers en premier
 
         with self._broker_lock:
             open_symbols = {s for s, p in self.paper.positions.items() if p.qty != 0 and s in self.s.universe}
 
-        # Sélectionner les 3 meilleures opportunités (shorts + longs)
-        # Prend les 2 plus baissiers (shorts) + les 2 plus haussiers (longs)
-        worst = [s for s in scored if s[0] < -0.05][:2]   # shorts
-        best = [s for s in reversed(scored) if s[0] > 0.05][:2]  # longs
+        # Étape 3 : sélectionner 3 meilleures opportunités
+        shorts = [s for s in scored if s[0] < -0.05][:2]
+        longs = [s for s in reversed(scored) if s[0] > 0.05][:2]
         active = list(open_symbols)
-        for score, sym in worst + best:
+        for score, sym in shorts + longs:
             if sym not in active:
                 active.append(sym)
             if len(active) >= 3:
                 break
         active = active[:3]
 
-        # Scanner les actifs sélectionnés
-        marks: dict[str, float] = {}
-        marks_lock = threading.Lock()
-        # Priorité : les 3 actifs sélectionnés
-        all_to_scan = list(active)
-        # On ajoute aussi les positions ouvertes qui auraient été filtrées
-        for sym in scored[:5]:
-            if sym[1] not in all_to_scan:
-                all_to_scan.append(sym[1])
-        for sym in open_symbols:
-            if sym not in all_to_scan:
-                all_to_scan.append(sym)
-
-        futures = {self._snap_executor.submit(self._process_symbol, sym, marks, marks_lock): sym for sym in all_to_scan}
-        from concurrent.futures import wait
-        done, _ = wait(list(futures.keys()), timeout=180)
-        for fut in done:
-            try:
-                fut.result()
-            except Exception:
-                ERRORS.labels(component="step").inc()
+        # Étape 4 : rescanner uniquement les 3 sélectionnés, cette fois avec trades
+        active_set = set(active)
+        trade_futures = {self._snap_executor.submit(self._process_symbol, sym, marks, marks_lock, readonly=False): sym for sym in active_set}
+        if trade_futures:
+            done2, _ = wait(list(trade_futures.keys()), timeout=120)
+            for fut in done2:
+                try:
+                    fut.result()
+                except Exception:
+                    ERRORS.labels(component="step").inc()
 
         with self._broker_lock:
             equity, unreal = self.paper.equity(marks)

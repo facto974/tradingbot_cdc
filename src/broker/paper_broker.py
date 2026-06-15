@@ -7,9 +7,9 @@ from dataclasses import dataclass, field
 @dataclass
 class Position:
     symbol: str = ""
-    qty: float = 0.0
+    qty: float = 0.0      # positif = long, négatif = short
     avg_price: float = 0.0
-    side: str = ""   # "buy" = long, "sell" = short, "" = pas de position
+    side: str = ""        # "buy" = long, "sell" = short, "" = pas de position
 
 
 class PaperBroker:
@@ -31,42 +31,45 @@ class PaperBroker:
 
         if side.lower() == "buy":
             if pos.qty < 0:
-                # Fermer ou réduire un SHORT : buy back
-                close_qty = min(qty, abs(pos.qty))
+                # Fermer/réduire SHORT : on rachète (buy to cover)
+                close_qty = min(qty, -pos.qty)
+                # On avait reçu close_qty * avg_price à l'ouverture du short
+                # On rembourse close_qty * price aujourd'hui
                 pnl = (pos.avg_price - price) * close_qty - fee
                 pos.qty += close_qty
                 self.realized_pnl += pnl
-                self.cash += (close_qty * pos.avg_price) - notional - fee
+                self.cash -= notional + fee  # on rachète → on paye
                 if pos.qty == 0:
                     pos.side = ""
                     pos.avg_price = 0.0
-                else:
-                    pos.side = "sell"
             else:
-                # Ouvrir ou augmenter un LONG
-                new_qty = pos.qty + qty
-                if new_qty != 0:
-                    pos.avg_price = (pos.avg_price * pos.qty + qty * price) / new_qty
-                pos.qty = new_qty
-                pos.side = "buy" if pos.qty > 0 else ""
+                # Ouvrir/augmenter LONG
+                if pos.qty != 0:
+                    pos.avg_price = (pos.avg_price * pos.qty + qty * price) / (pos.qty + qty)
+                else:
+                    pos.avg_price = price
+                pos.qty += qty
+                pos.side = "buy"
                 self.cash -= notional + fee
         else:  # sell
             if pos.qty > 0:
-                # Fermer ou réduire un LONG
+                # Fermer/réduire LONG
                 close_qty = min(qty, pos.qty)
                 pnl = (price - pos.avg_price) * close_qty - fee
                 pos.qty -= close_qty
                 self.realized_pnl += pnl
+                self.cash += notional - fee
                 if pos.qty == 0:
                     pos.side = ""
             else:
-                # Ouvrir ou augmenter un SHORT
-                new_qty = pos.qty - qty
-                if new_qty != 0:
-                    pos.avg_price = (pos.avg_price * abs(pos.qty) + qty * price) / abs(new_qty)
-                pos.qty = new_qty
-                pos.side = "sell" if pos.qty < 0 else ""
-            self.cash += notional - fee
+                # Ouvrir/augmenter SHORT
+                if pos.qty != 0:
+                    pos.avg_price = (pos.avg_price * (-pos.qty) + qty * price) / (-pos.qty + qty)
+                else:
+                    pos.avg_price = price
+                pos.qty -= qty
+                pos.side = "sell"
+                self.cash += notional - fee  # on reçoit le cash de la vente short
 
         trade = {"symbol": symbol, "side": side, "qty": qty, "price": price,
                  "fee": fee, "pnl": pnl}
@@ -82,6 +85,6 @@ class PaperBroker:
             if pos.side == "buy":
                 unreal += (mp - pos.avg_price) * pos.qty
             else:
-                unreal += (pos.avg_price - mp) * pos.qty  # short : profit si prix baisse
-        return self.cash + sum(p.qty * marks.get(s, p.avg_price)
-                               for s, p in self.positions.items()), unreal
+                unreal += (pos.avg_price - mp) * (-pos.qty)  # short : profit si prix baisse
+        market_value = sum(p.qty * marks.get(s, p.avg_price) for s, p in self.positions.items())
+        return self.cash + market_value, unreal
