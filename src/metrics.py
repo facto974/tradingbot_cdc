@@ -1,5 +1,27 @@
-"""Prometheus exporter — métriques globales de l'agent."""
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
+"""Prometheus exporter — métriques globales de l'agent.
+Importé silencieusement : si prometheus_client n'est pas installé,
+les métriques sont des no-ops."""
+from __future__ import annotations
+import logging
+
+logger = logging.getLogger(__name__)
+
+try:
+    from prometheus_client import Counter, Gauge, Histogram, start_http_server
+    _PROMETHEUS_AVAILABLE = True
+except ImportError:
+    logger.warning("prometheus_client non installe - les metriques Prometheus sont desactivees")
+    # Stubs no-op
+    class _Noop:
+        def labels(self, **kw): return self
+        def set(self, v): pass
+        def inc(self, v=1): pass
+        def observe(self, v): pass
+    Counter = _Noop
+    Gauge = _Noop
+    Histogram = _Noop
+    def start_http_server(port): pass
+    _PROMETHEUS_AVAILABLE = False
 
 
 # ---- Equity / PnL ----
@@ -34,5 +56,12 @@ API_LATENCY = Histogram(
 
 
 def start_metrics_server(port: int = 8000) -> None:
-    """Démarre le serveur HTTP Prometheus en arrière-plan."""
-    start_http_server(port)
+    """Démarre le serveur HTTP Prometheus en arrière-plan.
+    Ne plante pas si le port est déjà utilisé."""
+    if not _PROMETHEUS_AVAILABLE:
+        logger.info("Prometheus desactive - demarrage serveur ignore")
+        return
+    try:
+        start_http_server(port)
+    except OSError:
+        logger.warning("Impossible de demarrer le serveur metrics sur le port %s (deja utilise)", port)

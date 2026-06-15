@@ -297,7 +297,7 @@ class TradingAgent:
             f"| Signaux :\n{signals_str}"
             + ("\n" + "\n".join(issues) if issues else "")
         )
-        h = f"{equity:.2f}|{pos_count}|{ntrades}|{signals_str}"
+        h = f"{pos_count}|{ntrades}|{signals_str}"
         if h == self._last_summary_hash:
             return
         self._last_summary_hash = h
