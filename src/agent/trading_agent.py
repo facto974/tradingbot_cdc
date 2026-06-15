@@ -550,6 +550,15 @@ class TradingAgent:
                 break
         active = active[:3]
 
+        # Afficher les scores TOP/BOTTOM dans la console
+        top5_bear = scored[:3]
+        top5_bull = list(reversed(scored))[:3]
+        log_bear = " | ".join(f"{s.split('-')[0]}({score:+.3f})" for score, s in top5_bear)
+        log_bull = " | ".join(f"{s.split('-')[0]}({score:+.3f})" for score, s in top5_bull)
+        log_sel = " | ".join(s.split('-')[0] for s in active)
+        console.log(f"[dim]Scores: bear=[/][red]{log_bear}[/][dim] bull=[/][green]{log_bull}[/]")
+        console.log(f"[cyan]Selected: {log_sel}[/]")
+
         # Étape 4 : rescanner uniquement les 3 sélectionnés, cette fois avec trades
         active_set = set(active)
         trade_futures = {self._snap_executor.submit(self._process_symbol, sym, marks, marks_lock, readonly=False): sym for sym in active_set}
