@@ -540,8 +540,11 @@ class TradingAgent:
             open_symbols = {s for s, p in self.paper.positions.items() if p.qty != 0 and s in self.s.universe}
 
         # Étape 3 : sélectionner 3 meilleures opportunités
-        shorts = [s for s in scored if s[0] < -0.05][:2]
-        longs = [s for s in reversed(scored) if s[0] > 0.05][:2]
+        # Utiliser les seuils de la config (threshold_short pour les shorts, threshold_long pour les longs)
+        sel_short = self.strategy.cfg.threshold_short
+        sel_long = self.strategy.cfg.threshold_long
+        shorts = [s for s in scored if s[0] < sel_short][:2]
+        longs = [s for s in reversed(scored) if s[0] > sel_long][:2]
         active = list(open_symbols)
         for score, sym in shorts + longs:
             if sym not in active:
