@@ -41,27 +41,37 @@ console = Console()
 class _TelegramQueue:
     def __init__(self, notifier: TelegramNotifier) -> None:
         self._notifier = notifier
-        self._q: queue.Queue[str | None] = queue.Queue(maxsize=50)
+        self._q: queue.Queue[str | None] = queue.Queue(maxsize=200)
+        self._stop = False
+        self._drop_count = 0
         self._thread = threading.Thread(target=self._worker, daemon=True, name="telegram-sender")
         self._thread.start()
 
     def send(self, msg: str) -> None:
+        if self._stop:
+            return
         try:
             self._q.put_nowait(msg)
         except queue.Full:
-            pass
+            self._drop_count += 1
+            if self._drop_count <= 3 or self._drop_count % 50 == 0:
+                print(f"[TG] Queue pleine, message perdu (cumul: {self._drop_count})")
 
     def _worker(self) -> None:
-        while True:
-            msg = self._q.get()
+        while not self._stop or not self._q.empty():
+            try:
+                msg = self._q.get(timeout=0.5)
+            except Exception:
+                continue
             if msg is None:
                 break
             try:
                 self._notifier.send_sync(msg)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[TG] Erreur envoi: {e}")
 
     def stop(self) -> None:
+        self._stop = True
         self._q.put(None)
         self._thread.join(timeout=5)
 
