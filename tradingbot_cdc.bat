@@ -19,6 +19,11 @@ echo [1/4] Nettoyage du cache Python...
 if exist __pycache__ rmdir /s /q __pycache__ 2>nul
 for /d /r . %%d in (__pycache__) do @if exist "%%d" rmdir /s /q "%%d" 2>nul
 
+REM Nettoyage des PNG de test
+echo Nettoyage des fichiers de test...
+del /q test_equity.png 2>nul
+del /q test_signals.png 2>nul
+
 REM --- 2. Tuer les anciennes instances Python ---
 echo [2/4] Arrêt des anciennes instances...
 powershell -Command "Get-Process python* -ErrorAction SilentlyContinue | Stop-Process -Force"
