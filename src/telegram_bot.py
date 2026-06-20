@@ -37,7 +37,7 @@ class TelegramNotifier:
     # ── Démarrage / Arrêt ────────────────────────────────────
 
     def start(self) -> None:
-        if self._started:              # ← bloque tout second appel
+        if self._started:
             logger.warning("Telegram déjà démarré, appel ignoré")
             return
         if not self.token or not self.chat_id:
@@ -45,6 +45,19 @@ class TelegramNotifier:
             return
         try:
             self._app = Application.builder().token(self.token).build()
+            # Nettoyer les updates en attente pour éviter le conflit getUpdates
+            bot = Bot(self.token)
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                updates = loop.run_until_complete(bot.get_updates(timeout=1))
+                if updates:
+                    logger.info("Telegram : %d update(s) en attente nettoyée(s)", len(updates))
+            except Exception:
+                pass
+            finally:
+                loop.close()
             self._register_handlers()
             self._started = True
             # Thread daemon = s'arrête automatiquement si le process principal meurt
