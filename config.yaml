@@ -53,23 +53,23 @@ strategy:
     fear_greed: 0.15     # 0.20 → 0.15 ⚡ réduit biais SHORT macro
 
   momentum:
-    lookback_days: 24    # 3 → 24 ⚡ momentum sur 2h (24×5min) au lieu de 15min
-    ema_smooth: 12       # 8 → 12 (smoothing sur 1h)
-    enable_trend_filter: true   # false → true ⚡ évite shorter en bull et inverse
-    sma_fast: 24         # 50 → 24 (2h sur 5min OHLCV)
-    sma_slow: 144        # 200 → 144 (12h, cycle journalier complet)
+    lookback_days: 48    # 24 → 48 ⚡ momentum sur 4h (réduit bruit)
+    ema_smooth: 24       # 12 → 24 (smoothing 2h)
+    enable_trend_filter: true   # filtre régime macro
+    sma_fast: 48         # 24 → 48 (4h)
+    sma_slow: 288        # 144 → 288 (24h, cycle journalier complet)
 
   thresholds:
     long: 0.05           # inchangé (déjà bas)
-    short: -0.08         # -0.10 → -0.08 (symétrie LONG/SHORT)
-    close_threshold: -0.05         # -0.30 → -0.05 ⚡⚡ FIX BUG #2
-    close_short_threshold: -0.03   # 0.05 → -0.03 ⚡⚡ FIX BUG #1
+    short: -0.08         # inchangé
+    close_threshold: -0.05         # inchangé
+    close_short_threshold: -0.03   # inchangé
 
   sentiment:
     high_conviction: false
     min_active_sources: 1
-    require_aligned: true        # false → true ⚡ exige momentum+sentiment alignés
-    min_momentum_abs: 0.03       # 0.01 → 0.03 (filtre les signaux trop faibles)
+    require_aligned: true        # exige momentum+sentiment alignés
+    min_momentum_abs: 0.03       # filtre les signaux trop faibles
     reddit_subs:
       - CryptoCurrency
       - CryptoMarkets

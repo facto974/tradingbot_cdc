@@ -340,11 +340,13 @@ class TradingAgent:
             self._log(f"[red]Crypto.com : échec de l'ordre : {e}[/]")
             return {}
 
-    def _position_size(self, symbol: str, price: float, volatility: float) -> float:
+    def _position_size(self, symbol: str, price: float, volatility: float, score: float = 0.0) -> float:
         with self._broker_lock:
             equity, _ = self.paper.equity({})
             open_count = sum(1 for p in self.paper.positions.values() if abs(p.qty) > 0)
-        max_notional = min(equity * 0.80, self.max_position_usd)
+        # Conviction: score 0.05 → 0.5x, score 0.15+ → 1.5x (sizing par signal)
+        conviction = max(0.5, min(1.5, abs(score) / 0.10)) if score else 1.0
+        max_notional = min(equity * 0.80, self.max_position_usd) * conviction
         vol_factor = min(1.0, 0.05 / max(volatility, 0.01)) if volatility > 0 else 1.0
         diversification_factor = max(0.3, 1.0 - open_count * 0.25)
         return max_notional * vol_factor * diversification_factor
@@ -390,6 +392,21 @@ class TradingAgent:
             entry = pos.avg_price
             abs_qty = abs(pos.qty)
             if pos.side == "buy":
+                # ── Trailing stop dynamique (lock gains progressifs) ──
+                pct_to_tp = (snap.price - entry) / (entry * self.take_profit_pct) if entry > 0 else 0
+                if pct_to_tp >= 0.66:
+                    trailing_sl = entry + (snap.price - entry) * 0.5  # lock 50% gain
+                    if snap.price <= trailing_sl:
+                        self._log(f"[cyan]Trailing-lock50 {symbol} @ ${snap.price:.2f}[/]")
+                        self._tg.send(f"🔒 Trailing-lock {symbol}\n| Entrée : ${entry:.2f}\n| Sortie : ${snap.price:.2f}")
+                        self._execute(symbol, "sell", abs_qty, snap.price)
+                        return
+                elif pct_to_tp >= 0.33:
+                    breakeven = entry * 1.002  # couvre frais
+                    if snap.price <= breakeven:
+                        self._log(f"[cyan]Breakeven {symbol} @ ${snap.price:.2f}[/]")
+                        self._execute(symbol, "sell", abs_qty, snap.price)
+                        return
                 if snap.price <= entry * (1 - self.stop_loss_pct):
                     self._log(f"[yellow]Stop-loss {symbol} @ ${snap.price:.2f}[/]")
                     self._tg.send(f"Stop-loss {symbol}\n| Entrée : ${entry:.2f}\n| Sortie : ${snap.price:.2f} ({((snap.price/entry-1)*100):+.2f}%)")
@@ -405,6 +422,21 @@ class TradingAgent:
             elif pos.side == "sell":
                 sl_pct = getattr(self, 'short_stop_loss_pct', self.stop_loss_pct)
                 tp_pct = getattr(self, 'short_take_profit_pct', self.take_profit_pct)
+                # ── Trailing stop SHORT (miroir) ──
+                pct_to_tp = (entry - snap.price) / (entry * tp_pct) if entry > 0 else 0
+                if pct_to_tp >= 0.66:
+                    trailing_sl = entry - (entry - snap.price) * 0.5
+                    if snap.price >= trailing_sl:
+                        self._log(f"[cyan]Trailing-lock50 short {symbol} @ ${snap.price:.2f}[/]")
+                        self._tg.send(f"🔒 Trailing-lock short {symbol}")
+                        self._execute(symbol, "buy", abs_qty, snap.price)
+                        return
+                elif pct_to_tp >= 0.33:
+                    breakeven = entry * 0.998
+                    if snap.price >= breakeven:
+                        self._log(f"[cyan]Breakeven short {symbol} @ ${snap.price:.2f}[/]")
+                        self._execute(symbol, "buy", abs_qty, snap.price)
+                        return
                 if snap.price >= entry * (1 + sl_pct):
                     self._log(f"[yellow]Stop-loss short {symbol} @ ${snap.price:.2f}[/]")
                     self._tg.send(f"Stop-loss short {symbol}")
@@ -455,7 +487,7 @@ class TradingAgent:
                 except Exception:
                     pass
             vol = _vol_cached(symbol, snap.ohlcv)
-            notional = self._position_size(symbol, snap.price, vol)
+            notional = self._position_size(symbol, snap.price, vol, sig.score)
             qty = round(notional / snap.price, 6)
             if qty > 0:
                 self._log(f"[bold green]LONG {symbol} @ ${snap.price:.2f} (qty={qty})[/] mom={sig.momentum:+.3f} score={sig.score:+.3f}")
@@ -476,7 +508,7 @@ class TradingAgent:
                 except Exception:
                     pass
             vol = _vol_cached(symbol, snap.ohlcv)
-            notional = self._position_size(symbol, snap.price, vol)
+            notional = self._position_size(symbol, snap.price, vol, sig.score)
             qty = round(notional / snap.price, 6)
             if qty > 0:
                 self._log(f"[bold red]SHORT {symbol} @ ${snap.price:.2f} (qty={qty})[/]")
@@ -539,19 +571,28 @@ class TradingAgent:
         with self._broker_lock:
             open_symbols = {s for s, p in self.paper.positions.items() if p.qty != 0 and s in self.s.universe}
 
-        # Étape 3 : sélectionner 3 meilleures opportunités
+        # Étape 3 : sélectionner les max_concurrent_positions opportunités
         # Utiliser les seuils de la config (threshold_short pour les shorts, threshold_long pour les longs)
         sel_short = self.strategy.cfg.threshold_short
         sel_long = self.strategy.cfg.threshold_long
-        shorts = [s for s in scored if s[0] < sel_short][:2]
-        longs = [s for s in reversed(scored) if s[0] > sel_long][:2]
+        max_active = self.max_concurrent_positions
+        half = max(1, max_active // 2)
+        shorts = [s for s in scored if s[0] < sel_short][:half]
+        longs = [s for s in reversed(scored) if s[0] > sel_long][:half]
         active = list(open_symbols)
-        for score, sym in shorts + longs:
+        # Entrelace SHORT/LONG pour éviter biais directionnel
+        interleaved = []
+        for i in range(max(len(shorts), len(longs))):
+            if i < len(shorts):
+                interleaved.append(shorts[i])
+            if i < len(longs):
+                interleaved.append(longs[i])
+        for score, sym in interleaved:
             if sym not in active:
                 active.append(sym)
-            if len(active) >= 3:
+            if len(active) >= max_active:
                 break
-        active = active[:3]
+        active = active[:max_active]
 
         # Afficher les scores TOP/BOTTOM dans la console
         top5_bear = scored[:3]
