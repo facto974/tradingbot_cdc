@@ -35,10 +35,10 @@ plt.rcParams["grid.alpha"] = 0.3
 
 def _emoji(val: float) -> str:
     if val > 0:
-        return "🟢"
+        return "+"
     elif val < 0:
-        return "🔴"
-    return "⚪"
+        return "-"
+    return "0"
 
 
 def _color(val: float) -> str:
@@ -64,7 +64,7 @@ def equity_chart(
     BytesIO prêt à être envoyé via Telegram (format PNG).
     """
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), gridspec_kw={"height_ratios": [3, 1]})
-    fig.suptitle("📊 TradingBot CDC — Performance", color=COLORS["text"],
+    fig.suptitle("TradingBot CDC — Performance", color=COLORS["text"],
                  fontsize=16, fontweight="bold", y=0.98)
 
     series = pd.Series(equity_history)
@@ -103,7 +103,7 @@ def equity_chart(
         bars = ax2.barh([0, 1], [wins, losses], height=0.5,
                         color=bar_colors, alpha=0.8, edgecolor="white", linewidth=0.5)
         ax2.set_yticks([0, 1])
-        ax2.set_yticklabels(["✅ Gagnants", "❌ Perdants"], color=COLORS["text"])
+        ax2.set_yticklabels(["Gagnants", "Perdants"], color=COLORS["text"])
         for bar, val in zip(bars, [wins, losses]):
             ax2.text(bar.get_width() + 0.5, bar.get_y() + bar.get_height() / 2,
                      str(val), ha="left", va="center", color=COLORS["text"],
@@ -157,7 +157,7 @@ def signals_chart(
     values = [v for _, v in items]
 
     fig, ax = plt.subplots(figsize=(10, max(6, len(symbols) * 0.3)))
-    fig.suptitle("📡 Signaux en direct", color=COLORS["text"],
+    fig.suptitle("Signaux en direct", color=COLORS["text"],
                  fontsize=14, fontweight="bold")
 
     y = np.arange(len(symbols))
