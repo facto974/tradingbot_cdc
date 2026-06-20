@@ -202,6 +202,7 @@ class TradingAgent:
         self._summary_steps = self._summary_interval * 60 // max(1, self.s.loop_interval)
         self._last_summary_hash: str | None = None
 
+        self._equity_history: list[float] = [self.initial_capital]
         self._snap_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="snap")
 
     def _restore_positions(self) -> None:
@@ -624,6 +625,7 @@ class TradingAgent:
             rpnl = self.paper.realized_pnl
             npos = sum(1 for p in self.paper.positions.values() if p.qty != 0)
             ntrades = len(self.paper.trades)
+        self._equity_history.append(equity)
         EQUITY.set(equity)
         REALIZED_PNL.set(rpnl)
         UNREALIZED_PNL.set(unreal)

@@ -1,4 +1,4 @@
-"""Bot Telegram — notifications trades + commandes en direct."""
+"""Bot Telegram — notifications trades + commandes en direct + graphiques colorés."""
 from __future__ import annotations
 
 import asyncio
@@ -9,6 +9,8 @@ import threading
 import telegram
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+
+from .telegram_chart import equity_chart, signals_chart
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,8 @@ class TelegramNotifier:
         self._app.add_handler(CommandHandler("positions", self._cmd_positions))
         self._app.add_handler(CommandHandler("pnl", self._cmd_pnl))
         self._app.add_handler(CommandHandler("close", self._cmd_close))
+        self._app.add_handler(CommandHandler("chart", self._cmd_chart))
+        self._app.add_handler(CommandHandler("signals", self._cmd_signals))
 
     async def _reply(self, update: Update, text: str) -> None:
         if update.effective_message:
@@ -169,6 +173,72 @@ class TelegramNotifier:
             f"└ P&L Non-réalisé : ${unreal:+.2f}"
         )
         await self._reply(update, msg)
+
+    async def _cmd_chart(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self.agent:
+            await self._reply(update, "❌ Agent non connecté")
+            return
+        try:
+            from .telegram_chart import equity_chart
+            buf = equity_chart(
+                equity_history=self.agent._equity_history,
+                initial_capital=self.agent.initial_capital,
+                trades_count=len(self.agent.paper.trades),
+                win_rate=self._win_rate(),
+                max_dd=self._max_dd(),
+                sharpe=self._sharpe(),
+            )
+            chat_id = self._resolve_chat_id()
+            bot = Bot(self.token)
+            await bot.send_photo(chat_id=chat_id, photo=buf, caption="📊 Performance du bot")
+        except Exception as e:
+            await self._reply(update, f"❌ Erreur graphique : {e}")
+
+    async def _cmd_signals(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self.agent:
+            await self._reply(update, "❌ Agent non connecté")
+            return
+        try:
+            from .telegram_chart import signals_chart
+            scores = {s: (d.get("score") or 0) for s, d in self.agent._last_snapshots.items()}
+            buf = signals_chart(
+                scores=scores,
+                threshold_long=self.agent.strategy.cfg.threshold_long,
+                threshold_short=self.agent.strategy.cfg.threshold_short,
+            )
+            if buf is None:
+                await self._reply(update, "📭 Aucun signal disponible")
+                return
+            chat_id = self._resolve_chat_id()
+            bot = Bot(self.token)
+            await bot.send_photo(chat_id=chat_id, photo=buf, caption="📡 Signaux en direct")
+        except Exception as e:
+            await self._reply(update, f"❌ Erreur graphique : {e}")
+
+    def _win_rate(self) -> float:
+        trades = self.agent.paper.trades
+        if not trades:
+            return 0.0
+        wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
+        return wins / len(trades)
+
+    def _max_dd(self) -> float:
+        eq = pd.Series(self.agent._equity_history)
+        if eq.empty:
+            return 0.0
+        peak = eq.cummax()
+        dd = (eq - peak) / peak
+        return dd.min()
+
+    def _sharpe(self) -> float:
+        eq = pd.Series(self.agent._equity_history)
+        if len(eq) < 2:
+            return 0.0
+        rets = eq.pct_change().dropna()
+        if rets.std() == 0:
+            return 0.0
+        # Annualisé pour bougies horaires (sqrt(365*24))
+        return float((rets.mean() / rets.std()) * (365 * 24) ** 0.5)
 
     async def _cmd_close(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self.agent:
