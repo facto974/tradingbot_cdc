@@ -493,6 +493,8 @@ class TradingAgent:
                 self._log(f"[bold green]LONG {symbol} @ ${snap.price:.2f} (qty={qty})[/] mom={sig.momentum:+.3f} score={sig.score:+.3f}")
                 self._execute(symbol, "buy", qty, snap.price)
         elif sig.decision == "SHORT":
+            if sig.score > self.strategy.cfg.threshold_short:
+                return
             with self._broker_lock:
                 current_open = sum(1 for p in self.paper.positions.values() if p.qty != 0)
                 if current_open >= self.max_concurrent_positions:
