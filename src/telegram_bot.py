@@ -6,6 +6,7 @@ import logging
 from typing import Any
 import threading
 
+import pandas as pd
 import telegram
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
