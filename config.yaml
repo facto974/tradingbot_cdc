@@ -53,6 +53,10 @@ risk:
   equity_stop_loss_pct: 0.10
   cooldown_after_sl_min: 60
   max_hold_hours: 48
+  # Night trading : multiplie la taille de position pendant 20h-4h UTC.
+  # 1.30 = positions ~30% plus grosses la nuit (historiquement plus efficace).
+  # Mettre à 1.0 pour désactiver.
+  night_trading_mult: 1.30
 
 llm:
   validate_signals: false

@@ -36,6 +36,7 @@ def live_position_size(
     ts: pd.Timestamp,
     max_position_usd: float,
     price: float = 0.0,
+    night_mult: float = 1.30,
 ) -> float:
     """Réplique EXACTEMENT trading_agent.py::_position_size() pour que le
     backtest et le live utilisent la même formule de dimensionnement.
@@ -50,6 +51,9 @@ def live_position_size(
     qty = risk_target / max(stop_dist, 1e-12)
     max_notional = min(equity * 0.25, max_position_usd)
     notional = min(qty * price, max_notional)
+    # ── Night trading : +30% de taille pendant 20h-4h UTC (miroir du live) ──
+    if _is_night_trade(ts) and night_mult > 1.0:
+        notional = min(notional * night_mult, max_notional)
     return max(notional, 0.0)
 
 

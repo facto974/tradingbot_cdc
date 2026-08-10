@@ -198,6 +198,9 @@ class TradingAgent:
         # Cooldown anti-revenge-trade après un stop-loss (en minutes)
         self.cooldown_after_sl_min = float(risk.get("cooldown_after_sl_min", 0))
         self.max_hold_hours = float(risk.get("max_hold_hours", 48))
+        # Night trading : multiplicateur de taille de position pendant 20h-4h UTC.
+        # 1.30 = positions ~30% plus grosses la nuit. 1.0 = désactivé.
+        self.night_trading_mult = float(risk.get("night_trading_mult", 1.0))
         self._sl_cooldown: dict[str, float] = {}
         self._entry_time: dict[str, float] = {}
         self._trailing_high: dict[str, float] = {}  # plus haut prix atteint par position LONG
@@ -435,6 +438,11 @@ class TradingAgent:
         qty = risk_target / max(stop_dist, 1e-12)
         max_notional = min(equity * 0.25, self.max_position_usd)
         notional = min(qty * price, max_notional)
+        # ── Night trading : +30% de taille pendant 20h-4h UTC ──
+        # Le multiplicateur agrandit le notionnel mais reste borné par
+        # max_notional (déjà capé par equity*0.25 et max_position_usd).
+        if self._is_night_trade() and self.night_trading_mult > 1.0:
+            notional = min(notional * self.night_trading_mult, max_notional)
         # ── Bug 8 corrigé : vérifier que le cash disponible suffit ──
         # Le notionnel (hors frais) ne doit pas dépasser le cash disponible.
         # On borne le notionnel au cash pour éviter de dépendre du rejet du PaperBroker.
