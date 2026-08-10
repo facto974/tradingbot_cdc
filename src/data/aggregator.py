@@ -43,7 +43,7 @@ _SOURCE_TTL: dict[str, float] = {
     "futures_ls":      60.0,
     "binance_change":  30.0,
     "binance_taker":   30.0,
-    "ohlcv":          300.0,
+    "ohlcv":          120.0,
     "groq":            60.0,
     "price":           30.0,
 }
@@ -203,7 +203,7 @@ class DataAggregator:
         self.reddit_subs  = reddit_subs
         self.reddit_limit = reddit_limit
 
-    def snapshot(self, symbol: str, period: str = "1d", interval: str = "1m") -> MarketSnapshot:
+    def snapshot(self, symbol: str, period: str = "60d", interval: str = "1h") -> MarketSnapshot:
         """Collecte toutes les sources en parallèle (sans imbrication d'executors)."""
         norm = _normalize(symbol)  # AAVEUSD → AAVE-USD
 
@@ -263,7 +263,8 @@ class DataAggregator:
         if price > 0:
             _store("price", symbol, price)
         else:
-            price = 1.0
+            # Ne pas accepter un prix arbitraire - signaler et garder 0 pour rejet
+            logger.warning(f"Impossible d'obtenir le prix pour {symbol}")
 
         # ── Sentiment final : fallback Reddit → CoinGecko → DexScreener
         or_score = results.get("reddit") or results.get("coingecko") or dex_community_score(symbol)

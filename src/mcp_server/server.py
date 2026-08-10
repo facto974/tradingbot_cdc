@@ -67,10 +67,11 @@ def build_server() -> Server:
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         s = Settings.load()
         if name == "get_market_snapshot":
-            agg = DataAggregator(FinnhubClient(s.finnhub_api_key),
-                                 RedditClient(s.reddit_client_id, s.reddit_client_secret,
-                                              s.reddit_user_agent),
-                                 ["CryptoCurrency"])
+            agg = DataAggregator(
+                RedditClient(s.reddit_client_id, s.reddit_client_secret,
+                             s.reddit_user_agent),
+                ["CryptoCurrency"],
+            )
             snap = agg.snapshot(arguments["symbol"])
             payload = {"symbol": snap.symbol, "price": snap.price,
                        "reddit": snap.reddit, "futures_ls": snap.futures_ls,
@@ -82,8 +83,12 @@ def build_server() -> Server:
             agent = _agent()
             agg = agent.aggregator
             snap = agg.snapshot(arguments["symbol"])
+            pos = agent.paper.positions.get(arguments["symbol"])
+            position_side = pos.side if pos and abs(pos.qty) > 0 else ""
             sig = agent.strategy.evaluate(snap.ohlcv, snap.reddit, snap.futures_ls,
-                                          snap.coingecko_social, snap.fear_greed)
+                                          snap.coingecko_social, snap.fear_greed,
+                                          symbol=arguments["symbol"],
+                                          position_side=position_side)
             return [TextContent(type="text", text=json.dumps(sig.__dict__, indent=2))]
 
         if name == "place_order":

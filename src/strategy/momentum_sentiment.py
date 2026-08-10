@@ -38,10 +38,10 @@ class StrategyConfig:
     lookback:   int = 21        # jours/barres pour le calcul du momentum
     ema_smooth: int = 34        # EMA lissage du prix
 
-    threshold_long:  float = 0.45    # score >= 0.45 → LONG (signaux forts uniquement)
+    threshold_long:  float = 0.45    # score >= 0.45 → LONG
     threshold_short: float = -0.40   # score <= -0.40 → SHORT
     close_threshold: float = -0.15   # score < -0.15 ferme une position LONG
-    close_short_threshold: float = -0.55  # score > -0.55 ferme une position SHORT
+    close_short_threshold: float = -0.25  # score > -0.25 ferme une position SHORT
 
     allow_short:     bool  = False
 
@@ -315,24 +315,55 @@ class MomentumSentimentStrategy:
             | (abs(sentiment) < self.cfg.min_momentum_abs)
         ) if self.cfg.require_aligned else pd.Series(True, index=ohlcv.index)
 
-        position = pd.Series(0, index=ohlcv.index, dtype=int)
+        # ── Filtre de tendance macro (SMA fast/slow), vectorisé ──────
+        # Miroir de evaluate() : sans ce bloc, le backtest ouvrait des LONG
+        # en bear market que le bot live aurait bloqués via enable_trend_filter.
+        if self.cfg.enable_trend_filter and "Close" in ohlcv.columns:
+            sma_fast = ohlcv["Close"].rolling(self.cfg.sma_fast).mean()
+            sma_slow = ohlcv["Close"].rolling(self.cfg.sma_slow).mean()
+            trend_ok = (sma_fast >= sma_slow).fillna(False)
+        else:
+            trend_ok = pd.Series(True, index=ohlcv.index)
 
-        # Ouverture LONG : score >= threshold ET aligné
-        open_long = (score >= self.cfg.threshold_long) & aligned
-        position[open_long] = 1
-
-        # Fermeture LONG : score < close_threshold
-        close_long = (score < self.cfg.close_threshold) & (position.shift(1) == 1)
-        position[close_long] = 0
-
-        if self.cfg.allow_short:
-            open_short = (score <= self.cfg.threshold_short) & aligned
-            position[open_short & (position.shift(1) != 1)] = -1
-            close_short = (score > -self.cfg.close_threshold) & (position.shift(1) == -1)
-            position[close_short] = 0
-
-        # Forward-fill les positions pour garder la position tant qu'elle n'est pas fermée
-        position = position.replace(0, method="ffill").fillna(0).astype(int)
+        # Machine à états séquentielle — miroir EXACT de evaluate() :
+        #   - LONG gardé tant que score > close_threshold (HOLD), même si score < threshold_long
+        #   - SHORT gardé tant que score <= close_short_threshold
+        #   - Ouverture LONG si score >= threshold_long & aligned & trend_ok
+        #   - Ouverture SHORT si score <= threshold_short & aligned (si allow_short)
+        # Contrairement à l'ancienne logique ffill+explicit_close qui fermait
+        # dès que score < threshold_long (incohérent avec le live).
+        n = len(ohlcv.index)
+        position = np.zeros(n, dtype=int)
+        state = 0  # 0=flat, 1=long, -1=short
+        for i in range(n):
+            sc = float(score.iloc[i])
+            al = bool(aligned.iloc[i])
+            tr = bool(trend_ok.iloc[i])
+            if state == 1:
+                # HOLD tant que score > close_threshold, sinon FLAT
+                if sc > self.cfg.close_threshold:
+                    position[i] = 1
+                else:
+                    state = 0
+                    position[i] = 0
+            elif state == -1:
+                # HOLD tant que score <= close_short_threshold, sinon FLAT
+                if sc <= self.cfg.close_short_threshold:
+                    position[i] = -1
+                else:
+                    state = 0
+                    position[i] = 0
+            else:
+                # Pas de position : ouvrir selon les signaux
+                if sc >= self.cfg.threshold_long and al and tr:
+                    state = 1
+                    position[i] = 1
+                elif self.cfg.allow_short and sc <= self.cfg.threshold_short and al:
+                    state = -1
+                    position[i] = -1
+                else:
+                    position[i] = 0
+        position = pd.Series(position, index=ohlcv.index)
 
         return pd.DataFrame({
             "score":      score,
@@ -340,5 +371,6 @@ class MomentumSentimentStrategy:
             "sentiment":  sentiment,
             "fear_greed": fg,
             "aligned":    aligned,
+            "trend_ok":   trend_ok,
             "position":   position,
         })

@@ -44,7 +44,6 @@ class Settings:
         "XRP-USD",
         "ADA-USD",
         "DOGE-USD",
-        "MATIC-USD",
         "DOT-USD",
         "AVAX-USD",
     ])

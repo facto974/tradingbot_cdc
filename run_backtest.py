@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 
 import click
+import pandas as pd
+import requests
 from rich.console import Console
 from rich.table import Table
 from dotenv import load_dotenv
@@ -16,64 +18,72 @@ sys.path.insert(0, str(Path(__file__).parent))
 from src.backtest.engine import run
 from src.config import Settings
 from src.data.yfinance_client import fetch_ohlcv
-from src.strategy.momentum_sentiment import (MomentumSentimentStrategy,
-                                              StrategyConfig)
+from src.strategy.config_builder import build_strategy_config
+from src.strategy.momentum_sentiment import MomentumSentimentStrategy
+
+
+def fetch_fear_greed_history() -> pd.Series | None:
+    try:
+        r = requests.get("https://api.alternative.me/fng/?limit=0&format=json", timeout=15)
+        r.raise_for_status()
+        df = pd.DataFrame(r.json()["data"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"].astype(int), unit="s", utc=True)
+        df["value"] = df["value"].astype(float)
+        df = df.set_index("timestamp").sort_index()
+        return ((df["value"] / 50.0) - 1.0).rename("fear_greed")
+    except Exception as e:
+        print(f"[fear&greed] échec récupération: {e}", file=sys.stderr)
+        return None
 
 
 @click.command()
 @click.option("--config", default=None, help="Fichier YAML de config alternatif")
-@click.option("--symbol", default="BTC-USD")
+@click.option("--symbol", "symbols", multiple=True, default=["BTC-USD"], help="Répétable: --symbol BTC-USD --symbol ETH-USD")
 @click.option("--start", default="2023-01-01")
 @click.option("--end", default=None)
 @click.option("--interval", default="1h")
-def main(config: str | None, symbol: str, start: str, end: str | None, interval: str) -> None:
+def main(config: str | None, symbols: tuple[str, ...], start: str, end: str | None, interval: str) -> None:
     console = Console()
-    console.log(f"Fetching{symbol} {interval} from {start} to {end or 'now'}...")
-    # Accept '1day' as an alias for '1d' (CryptoCom API expects '1d')
     interval_cryptocom = "1d" if interval == "1day" else interval
-    df = fetch_ohlcv(symbol, start=start, end=end, interval=interval_cryptocom)
-    if df.empty:
-        console.print("[red]No data fetched.")
-        return
-    console.log(f"{len(df)} bars loaded.")
 
-    # Charger la config depuis YAML (fichier alternatif si fourni)
     settings = Settings.load(path=config) if config else Settings.load()
-    cfg = settings.raw.get("strategy", {})
-    weights = cfg.get("weights", {})
-    mom = cfg.get("momentum", {})
-    thresh = cfg.get("thresholds", {})
-    sent = cfg.get("sentiment", {})
-    risk = settings.raw.get("risk", {})
-
-    sc = StrategyConfig(
-        w_momentum=weights.get("momentum", 0.50),
-        w_sentiment=weights.get("sentiment", 0.30),
-        w_fear_greed=weights.get("fear_greed", 0.20),
-        lookback=mom.get("lookback_days", 14),
-        ema_smooth=mom.get("ema_smooth", 12),
-        threshold_long=thresh.get("long", 0.20),
-        threshold_short=thresh.get("short", -0.20),
-        allow_short=risk.get("allow_short", False),
-        high_conviction=sent.get("high_conviction", False),
-        min_active_sentiment_sources=sent.get("min_active_sources", 2),
-    )
+    # Config centralisée: garantit que le backtest utilise EXACTEMENT les mêmes
+    # paramètres (close_threshold, sma_fast/slow, min_momentum_abs, etc.) que
+    # trading_agent.py en live. Ne plus construire StrategyConfig() à la main ici.
+    sc = build_strategy_config(settings.raw)
     strat = MomentumSentimentStrategy(sc)
-    res = run(df, strat)
 
-    out = Path("data") / f"backtest_{symbol.replace('-', '')}.csv"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    res.equity.to_csv(out, header=["equity"])
+    fg_series = fetch_fear_greed_history()
+    if fg_series is None:
+        console.print("[yellow]Fear&Greed indisponible → composante neutralisée (0.0) pour ce run[/]")
 
-    table = Table(title=f"Backtest {symbol}")
-    table.add_column("Metric"); table.add_column("Value")
-    table.add_row("Total return", f"{res.total_return:+.2%}")
-    table.add_row("Sharpe (annualized)", f"{res.sharpe:.2f}")
-    table.add_row("Max drawdown", f"{res.max_dd:.2%}")
-    table.add_row("Trades", str(res.trades))
-    table.add_row("Win rate", f"{res.win_rate:.2%}")
+    table = Table(title="Backtest — résultats par symbole")
+    table.add_column("Symbol"); table.add_column("Trades"); table.add_column("Win rate")
+    table.add_column("Return"); table.add_column("Sharpe"); table.add_column("Max DD")
+
+    for symbol in symbols:
+        console.log(f"Fetching {symbol} {interval} from {start} to {end or 'now'}...")
+        df = fetch_ohlcv(symbol, start=start, end=end, interval=interval_cryptocom)
+        if df.empty:
+            console.print(f"[red]{symbol}: aucune donnée, ignoré.[/]")
+            continue
+        console.log(f"{symbol}: {len(df)} bars loaded.")
+
+        # NOTE: nécessite que run() dans engine.py accepte et transmette
+        # fear_greed_series à strategy.vectorized_signals() — cf patch séparé.
+        res = run(df, strat, fear_greed_series=fg_series)
+
+        out = Path("data") / f"backtest_{symbol.replace('-', '')}.csv"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        res.equity.to_csv(out, header=["equity"])
+
+        table.add_row(
+            symbol, str(res.trades), f"{res.win_rate:.2%}",
+            f"{res.total_return:+.2%}", f"{res.sharpe:.2f}", f"{res.max_dd:.2%}",
+        )
+        console.log(f"{symbol}: equity curve → {out}")
+
     console.print(table)
-    console.log(f"Equity curve → {out}")
 
 
 if __name__ == "__main__":

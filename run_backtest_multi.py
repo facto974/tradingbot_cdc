@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import pandas as pd
 import numpy as np
+import requests
 from rich.console import Console
 from rich.table import Table
 from dotenv import load_dotenv
@@ -16,61 +17,54 @@ load_dotenv()
 
 from src.config import Settings
 from src.data.yfinance_client import fetch_ohlcv
-from src.strategy.momentum_sentiment import MomentumSentimentStrategy, StrategyConfig
-from src.backtest.engine import run as backtest_single
-from src.strategy import indicators as ind
+from src.strategy.momentum_sentiment import MomentumSentimentStrategy
+from src.strategy.config_builder import build_strategy_config
 
 console = Console()
 
-# Symboles tests — top 10 par capitalisation + quelques mid-caps
 TEST_SYMBOLS = [
     "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD",
     "DOGE-USD", "ADA-USD", "AVAX-USD", "LINK-USD", "DOT-USD",
     "MATIC-USD", "NEAR-USD",
 ]
 
-def load_config(config_path: str | None = None) -> StrategyConfig:
-    settings = Settings.load(path=config_path) if config_path else Settings.load()
-    cfg = settings.raw.get("strategy", {})
-    weights = cfg.get("weights", {})
-    mom = cfg.get("momentum", {})
-    thresh = cfg.get("thresholds", {})
-    sent = cfg.get("sentiment", {})
-    risk = settings.raw.get("risk", {})
-    return StrategyConfig(
-        w_momentum=weights.get("momentum", 0.50),
-        w_sentiment=weights.get("sentiment", 0.30),
-        w_fear_greed=weights.get("fear_greed", 0.20),
-        lookback=mom.get("lookback_days", 14),
-        ema_smooth=mom.get("ema_smooth", 12),
-        threshold_long=thresh.get("long", 0.20),
-        threshold_short=thresh.get("short", -0.20),
-        allow_short=risk.get("allow_short", False),
-        high_conviction=sent.get("high_conviction", False),
-        min_active_sentiment_sources=sent.get("min_active_sources", 2),
-        enable_trend_filter=mom.get("enable_trend_filter", True),
-        sma_fast=mom.get("sma_fast", 24),
-        sma_slow=mom.get("sma_slow", 144),
-    )
 
-def compute_signals(df: pd.DataFrame, strat: MomentumSentimentStrategy) -> pd.Series:
-    """Calcule les signaux vectorisés pour un symbole."""
-    sig = strat.vectorized_signals(df)
-    return sig["score"] if "score" in sig.columns else sig["position"] * 0.0
+def fetch_fear_greed_history() -> pd.Series | None:
+    try:
+        r = requests.get("https://api.alternative.me/fng/?limit=0&format=json", timeout=15)
+        r.raise_for_status()
+        df = pd.DataFrame(r.json()["data"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"].astype(int), unit="s", utc=True)
+        df["value"] = df["value"].astype(float)
+        df = df.set_index("timestamp").sort_index()
+        return ((df["value"] / 50.0) - 1.0).rename("fear_greed")
+    except Exception as e:
+        console.log(f"[yellow]Fear&Greed indisponible: {e}[/]")
+        return None
+
 
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=None)
     parser.add_argument("--start", default="2024-01-01")
     parser.add_argument("--end", default="2024-06-01")
     parser.add_argument("--interval", default="1h")
     parser.add_argument("--max-positions", type=int, default=4)
     parser.add_argument("--symbols", nargs="+", default=TEST_SYMBOLS)
+    parser.add_argument("--fee-bps", type=float, default=10)
+    parser.add_argument("--slippage-bps", type=float, default=5)
     args = parser.parse_args()
 
-    sc = load_config()
+    settings = Settings.load(path=args.config) if args.config else Settings.load()
+    # Config centralisée: même paramètres qu'en live (cf config_builder.py),
+    # au lieu d'un 3e jeu de défauts qui divergeait des deux autres scripts.
+    sc = build_strategy_config(settings.raw)
     strat = MomentumSentimentStrategy(sc)
     max_pos = args.max_positions
+    cost_frac = (args.fee_bps + args.slippage_bps) / 1e4
+
+    fg_series = fetch_fear_greed_history()
 
     # 1. Charger tous les symboles
     all_data: dict[str, pd.DataFrame] = {}
@@ -94,7 +88,7 @@ def main() -> None:
 
     console.log(f"[green]{len(all_data)} symboles chargés ({errors} erreurs)[/]")
 
-    # 2. Aligner sur l'index du plus gros marché (BTC) pour gérer les actifs récents
+    # 2. Aligner sur l'index du plus gros marché (BTC)
     ref_idx = all_data["BTC-USD"].index if "BTC-USD" in all_data else sorted(set.union(*(set(df.index) for df in all_data.values())))
     console.log(f"[dim]{len(ref_idx)} barres de référence[/]")
 
@@ -102,12 +96,16 @@ def main() -> None:
         console.print("[red]Pas assez de barres.[/]")
         return
 
-    # 3. Pré-calculer les signaux pour chaque symbole et aligner sur ref_idx
+    # 3. Pré-calculer scores ET prix, tous deux ffill sur ref_idx.
+    #    (avant: seuls les scores étaient ffillés, pas les prix de clôture ->
+    #    un reindex direct sur le Close produisait des NaN et faisait
+    #    disparaître des positions silencieusement lors de la fermeture)
     signals: dict[str, pd.Series] = {}
+    closes: dict[str, pd.Series] = {}
     for sym, df in all_data.items():
-        sig = strat.vectorized_signals(df)
-        # Forward-fill depuis les données dispo, combler les débuts par 0
+        sig = strat.vectorized_signals(df, sentiment_series=None, fear_greed_series=fg_series)
         signals[sym] = sig["score"].reindex(ref_idx, method="ffill").fillna(0)
+        closes[sym] = df["Close"].reindex(ref_idx, method="ffill")
     console.log(f"[dim]{len(signals)} séries de signaux alignées[/]")
 
     # 4. Simuler la sélection et le P&L
@@ -117,17 +115,16 @@ def main() -> None:
     trades = 0
     wins = 0
     losses = 0
-    open_positions: dict[str, dict] = {}  # sym -> {entry_price, side, qty}
+    open_positions: dict[str, dict] = {}  # sym -> {entry_price, side, qty, notional}
     half = max(1, max_pos // 2)
+    alloc_frac = 0.80 / max_pos  # fraction du capital par slot, dérivée de --max-positions
 
     for t in range(1, len(ref_idx)):
         ts = ref_idx[t]
-        # Scores du jour t-1 (lag pour éviter le forward bias)
-        scored = [(signals[sym].iloc[t-1], sym) for sym in signals]
+        scored = [(signals[sym].iloc[t - 1], sym) for sym in signals]
         scored.sort(key=lambda x: x[0])
 
-        # Sélection entrelacée (même logique que step())
-        shorts = [s for s in scored if s[0] < sc.threshold_short][:half]
+        shorts = [s for s in scored if s[0] < sc.threshold_short][:half] if sc.allow_short else []
         longs = [s for s in reversed(scored) if s[0] > sc.threshold_long][:half]
         interleaved = []
         for i in range(max(len(shorts), len(longs))):
@@ -136,46 +133,56 @@ def main() -> None:
             if i < len(longs):
                 interleaved.append(longs[i])
         selected = interleaved[:max_pos]
-
-        # Fermer les positions qui ne sont plus sélectionnées
         selected_symbols = {sym for _, sym in selected}
+
+        # Fermer les positions qui ne sont plus sélectionnées.
+        # On vérifie le prix AVANT de retirer la position: si absent, on la
+        # garde ouverte plutôt que de la perdre silencieusement.
         for sym in list(open_positions.keys()):
-            if sym not in selected_symbols and sym in all_data:
-                pos = open_positions.pop(sym)
-                exit_price = all_data[sym]["Close"].reindex([ts]).iloc[0]
-                if pd.isna(exit_price):
-                    continue
-                pnl_pct = (exit_price / pos["entry_price"] - 1) * (1 if pos["side"] == "long" else -1)
-                pnl = capital * 0.25 * pnl_pct  # ~1/max_pos du capital
-                capital += pnl
-                wins += pnl > 0
-                losses += pnl <= 0
-                trades += 1
+            if sym in selected_symbols or sym not in closes:
+                continue
+            exit_price = closes[sym].loc[ts]
+            if pd.isna(exit_price) or exit_price <= 0:
+                continue  # position conservée, on retentera à t+1
+            pos = open_positions.pop(sym)
+            pnl_gross = (exit_price - pos["entry_price"]) * pos["qty"] * (1 if pos["side"] == "long" else -1)
+            fee = pos["notional"] * cost_frac
+            pnl = pnl_gross - fee
+            capital += pnl
+            wins += pnl > 0
+            losses += pnl <= 0
+            trades += 1
 
         # Ouvrir les nouvelles positions
         for score, sym in selected:
-            if sym in open_positions or sym not in all_data:
+            if sym in open_positions or sym not in closes:
                 continue
-            df = all_data[sym]
-            entry_price = df["Close"].reindex([ts]).iloc[0]
+            entry_price = closes[sym].loc[ts]
             if pd.isna(entry_price) or entry_price <= 0:
                 continue
             side = "long" if score > 0 else "short"
-            # Conviction sizing (adapté de _position_size)
+            if side == "short" and not sc.allow_short:
+                continue
             conviction = max(0.5, min(1.5, abs(score) / 0.10)) if score else 1.0
-            qty = (capital * 0.80 / max_pos * conviction) / entry_price
-            open_positions[sym] = {"entry_price": entry_price, "side": side, "qty": qty, "score": score}
+            notional = capital * alloc_frac * conviction
+            qty = notional / entry_price
+            entry_fee = notional * cost_frac
+            capital -= entry_fee
+            open_positions[sym] = {
+                "entry_price": entry_price, "side": side, "qty": qty,
+                "notional": notional, "score": score,
+            }
 
         equity_curve.append(capital)
 
-    # Fermer les positions restantes
+    # Fermer les positions restantes au dernier prix connu
     for sym, pos in list(open_positions.items()):
-        df = all_data.get(sym)
-        if df is None:
+        exit_price = closes[sym].iloc[-1] if sym in closes else None
+        if exit_price is None or pd.isna(exit_price) or exit_price <= 0:
             continue
-        exit_price = df["Close"].iloc[-1]
-        pnl_pct = (exit_price / pos["entry_price"] - 1) * (1 if pos["side"] == "long" else -1)
-        pnl = capital * 0.25 * pnl_pct
+        pnl_gross = (exit_price - pos["entry_price"]) * pos["qty"] * (1 if pos["side"] == "long" else -1)
+        fee = pos["notional"] * cost_frac
+        pnl = pnl_gross - fee
         capital += pnl
         wins += pnl > 0
         losses += pnl <= 0
@@ -198,11 +205,11 @@ def main() -> None:
     table.add_row("Max drawdown", f"{dd:.2%}")
     table.add_row("Trades", str(trades))
     table.add_row("Win rate", f"{win_rate:.2%}")
+    table.add_row("Fees+slippage", f"{(args.fee_bps + args.slippage_bps):.0f} bps/trade")
     table.add_row("Période", f"{args.start} → {args.end}")
     table.add_row("Max positions", str(max_pos))
+    table.add_row("Shorts autorisés", str(sc.allow_short))
     console.print(table)
-
-    # Top 3 symboles les plus tradés
     console.log(f"[dim]Capital final: ${capital:.2f} (départ: ${initial_capital:.2f})[/]")
 
 

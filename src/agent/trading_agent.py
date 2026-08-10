@@ -127,23 +127,23 @@ class TradingAgent:
         risk = cfg.get("risk", {})
 
         sc = StrategyConfig(
-            w_momentum=weights.get("momentum", 0.60),
-            w_sentiment=weights.get("sentiment", 0.15),
+            w_momentum=weights.get("momentum", 0.55),
+            w_sentiment=weights.get("sentiment", 0.20),
             w_fear_greed=weights.get("fear_greed", 0.25),
-            lookback=mom_cfg.get("lookback_days", 21),
-            ema_smooth=mom_cfg.get("ema_smooth", 34),
-            threshold_long=thresh.get("long", 0.35),
-            threshold_short=thresh.get("short", -0.55),
-            close_threshold=thresh.get("close_threshold", -0.10),
-            close_short_threshold=thresh.get("close_short_threshold", -0.60),
+            lookback=mom_cfg.get("lookback_days", 14),
+            ema_smooth=mom_cfg.get("ema_smooth", 7),
+            threshold_long=thresh.get("long", 0.15),
+            threshold_short=thresh.get("short", -0.35),
+            close_threshold=thresh.get("close_threshold", 0.00),
+            close_short_threshold=thresh.get("close_short_threshold", -0.10),
             allow_short=risk.get("allow_short", False),
             high_conviction=sent_cfg.get("high_conviction", False),
-            min_active_sentiment_sources=sent_cfg.get("min_active_sources", 2),
-            require_aligned=sent_cfg.get("require_aligned", False),
-            min_momentum_abs=sent_cfg.get("min_momentum_abs", 0.10),
+            min_active_sentiment_sources=sent_cfg.get("min_active_sources", 1),
+            require_aligned=sent_cfg.get("require_aligned", True),
+            min_momentum_abs=sent_cfg.get("min_momentum_abs", 0.05),
             enable_trend_filter=mom_cfg.get("enable_trend_filter", True),
-            sma_fast=mom_cfg.get("sma_fast", 50),
-            sma_slow=mom_cfg.get("sma_slow", 200),
+            sma_fast=mom_cfg.get("sma_fast", 24),
+            sma_slow=mom_cfg.get("sma_slow", 96),
         )
         self.strategy = MomentumSentimentStrategy(sc)
 
@@ -163,7 +163,7 @@ class TradingAgent:
         self.initial_capital = float(risk.get("initial_capital", 100.0))
         self.mode = cfg.get("mode", "paper")
         self.paper = PaperBroker(initial_cash=self.initial_capital)
-        self._broker_lock = threading.Lock()
+        self._broker_lock = threading.RLock()
 
         self.exchange = CryptoComClient(
             settings.cryptocom_api_key,
@@ -187,18 +187,23 @@ class TradingAgent:
         self.validate_signals = llm_cfg.get("validate_signals", True)
         self._llm_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="llm-val")
 
-        self.max_position_usd = float(risk.get("max_position_usd", 80))
-        self.kelly_fraction = float(risk.get("kelly_fraction", 0.70))
-        self.stop_loss_pct = float(risk.get("stop_loss_pct", 0.035))
-        self.take_profit_pct = float(risk.get("take_profit_pct", 0.06))
-        self.short_stop_loss_pct = float(risk.get("short_stop_loss_pct", 0.03))
-        self.short_take_profit_pct = float(risk.get("short_take_profit_pct", 0.05))
+        self.max_position_usd = float(risk.get("max_position_usd", 30))
+        self.kelly_fraction = float(risk.get("kelly_fraction", 0.25))
+        self.stop_loss_pct = float(risk.get("stop_loss_pct", 0.040))
+        self.take_profit_pct = float(risk.get("take_profit_pct", 0.080))
+        self.short_stop_loss_pct = float(risk.get("short_stop_loss_pct", 0.035))
+        self.short_take_profit_pct = float(risk.get("short_take_profit_pct", 0.070))
         self.max_concurrent_positions = int(risk.get("max_concurrent_positions", 3))
-        self.equity_stop_loss_pct = float(risk.get("equity_stop_loss_pct", 0.08))
+        self.equity_stop_loss_pct = float(risk.get("equity_stop_loss_pct", 0.10))
         # Cooldown anti-revenge-trade après un stop-loss (en minutes)
         self.cooldown_after_sl_min = float(risk.get("cooldown_after_sl_min", 0))
+        self.max_hold_hours = float(risk.get("max_hold_hours", 48))
         self._sl_cooldown: dict[str, float] = {}
+        self._entry_time: dict[str, float] = {}
+        self._trailing_high: dict[str, float] = {}  # plus haut prix atteint par position LONG
+        self._trailing_low: dict[str, float] = {}   # plus bas prix atteint par position SHORT
         self._stop_triggered = False
+        self._paused = False
 
         self.db = Database(settings.sqlite_path)
         self._restore_positions()
@@ -206,6 +211,8 @@ class TradingAgent:
         self._snapshots_lock = threading.Lock()
         self._last_snapshots: dict[str, Any] = {}
         self._marks_lock = threading.Lock()
+        self._last_prices: dict[str, float] = {}
+        self._max_price_drop_pct = 0.30  # ignorer les ticks qui chutent de >30% d'un coup
 
         self._step_count = 0
         self._summary_interval = max(1, int(cfg.get("telegram", {}).get("summary_interval_min", 10)))
@@ -217,20 +224,71 @@ class TradingAgent:
 
     def _restore_positions(self) -> None:
         rows = self.db.load_positions()
-        for symbol, side, qty, avg_price in rows:
-            from ..broker.paper_broker import Position
+        if not rows:
+            return
+        from ..broker.paper_broker import Position
+        from datetime import datetime, timezone
+        for row in rows:
+            # Nouveau format: (symbol, side, qty, avg_price, entry_ts)
+            if len(row) == 5:
+                symbol, side, qty, avg_price, entry_ts = row
+            else:  # ancien format: (symbol, side, qty, avg_price)
+                symbol, side, qty, avg_price = row
+                entry_ts = None
             pos = Position(symbol=symbol, side=side, qty=qty, avg_price=avg_price)
             self.paper.positions[symbol] = pos
-        if rows:
-            # Recalculer le cash : les longs ont coûté, les shorts ont rapporté
-            cash_adjust = 0.0
-            for p in self.paper.positions.values():
-                if p.qty > 0:  # long → on a payé
-                    cash_adjust -= p.qty * p.avg_price
-                elif p.qty < 0:  # short → on a reçu
-                    cash_adjust += abs(p.qty) * p.avg_price
-            self.paper.cash += cash_adjust
-            self._log(f"[dim]{len(rows)} position(s) restaurée(s) (cash ajusté de {cash_adjust:+.2f}$) depuis la BDD[/]")
+            # Restaurer le timestamp d'entrée pour le time-based exit
+            if entry_ts:
+                try:
+                    ts_dt = datetime.fromisoformat(entry_ts)
+                    if ts_dt.tzinfo is None:
+                        ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                    self._entry_time[symbol] = ts_dt.timestamp()
+                except Exception:
+                    self._entry_time[symbol] = time.time()
+            else:
+                # Position sans timestamp connu → on utilise maintenant
+                self._entry_time[symbol] = time.time()
+        # Recalculer le cash : les longs ont coûté, les shorts ont rapporté
+        cash_adjust = 0.0
+        for p in self.paper.positions.values():
+            if p.qty > 0:  # long → on a payé
+                cash_adjust -= p.qty * p.avg_price
+            elif p.qty < 0:  # short → on a reçu
+                cash_adjust += abs(p.qty) * p.avg_price
+        self.paper.cash += cash_adjust
+        self._log(f"[dim]{len(rows)} position(s) restaurée(s) (cash ajusté de {cash_adjust:+.2f}$) depuis la BDD[/]")
+        # ── Sécurité anti-crash : vérifier les prix de marché des positions restaurées ──
+        # Si le bot a été arrêté longtemps, une position peut avoir dévié dangereusement.
+        from ..data.ohlcv_client import fetch_ohlcv
+        self._log("[yellow]Vérification des positions restaurées (SL de sécurité)...[/]")
+        with self._broker_lock:
+            for symbol in list(self.paper.positions.keys()):
+                pos = self.paper.positions.get(symbol)
+                if not pos or abs(pos.qty) == 0:
+                    continue
+                try:
+                    df = fetch_ohlcv(symbol, period="1d", interval="1h")
+                    if df.empty:
+                        continue
+                    current_price = float(df["Close"].iloc[-1])
+                    if current_price <= 0:
+                        continue
+                    if pos.side == "buy":
+                        pnl_pct = current_price / pos.avg_price - 1
+                    else:
+                        pnl_pct = pos.avg_price / current_price - 1
+                    # Si la perte dépasse 2× le stop_loss_pct → fermeture d'urgence
+                    sl_emergency = self.stop_loss_pct * 2.0 if hasattr(self, 'stop_loss_pct') else 0.08
+                    if pnl_pct < -sl_emergency:
+                        self._log(f"[bold red]SL DE SÉCURITÉ {symbol}: perte de {pnl_pct*100:.1f}% pendant l'arrêt → fermeture[/]")
+                        close_side = "sell" if pos.side == "buy" else "buy"
+                        tr = self.paper.market(symbol, close_side, abs(pos.qty), current_price)
+                        self.db.insert_trade(symbol, close_side, abs(pos.qty), current_price, "paper", fee=tr["fee"], pnl=tr["pnl"])
+                        del self.paper.positions[symbol]
+                        self._tg.send(f"🛑 SL sécurité {symbol}\n| Perte {pnl_pct*100:.1f}% pendant arrêt\n| Fermeture @ ${current_price:.2f}")
+                except Exception as e:
+                    self._log(f"[red]Erreur vérification sécurité {symbol}: {e}[/]")
 
     def _log(self, msg: str) -> None:
         console.log(msg)
@@ -258,7 +316,7 @@ class TradingAgent:
             ps = f"[{'green' if pos_pnl > 0 else 'red'}]{pos_qty:.4f}[/]" if pos_qty > 0 else f"{pos_qty:.4f}"
             table.add_row(
                 f"[bold]{symbol.split('-')[0]}[/]",
-                f"${price:,.0f}" if price > 0 else "-",
+                f"${price:,.2f}" if price > 0 else "-",
                 f"[{sc}]{score:+.3f}[/]" if score is not None else "-",
                 f"[{dc}]{decision}[/]",
                 self._fmt(d.get("sentiment")),
@@ -283,6 +341,7 @@ class TradingAgent:
             snap_copy = dict(self._last_snapshots)
         with self._broker_lock:
             equity, unreal = self.paper.equity({s: d.get("price", 0) for s, d in snap_copy.items()})
+            cash = self.paper.cash
             pos_count = sum(1 for p in self.paper.positions.values() if abs(p.qty) > 0)
             rpnl = self.paper.realized_pnl
             ntrades = len(self.paper.trades)
@@ -300,6 +359,7 @@ class TradingAgent:
         ]
         msg = (
             f"Résumé périodique\n"
+            f"| Cash : ${cash:.2f}\n"
             f"| Equity : ${equity:.2f} ({perf:+.3f}%)\n"
             f"| Positions : {pos_count}\n"
             f"| P&L Réalisé : ${rpnl:+.2f}\n"
@@ -308,7 +368,7 @@ class TradingAgent:
             f"| Signaux :\n{signals_str}"
             + ("\n" + "\n".join(issues) if issues else "")
         )
-        h = f"{pos_count}|{ntrades}|{signals_str}"
+        h = f"{cash:.2f}|{pos_count}|{ntrades}|{signals_str}"
         if h == self._last_summary_hash:
             return
         self._last_summary_hash = h
@@ -322,6 +382,9 @@ class TradingAgent:
         if self.mode == "paper":
             with self._broker_lock:
                 tr = self.paper.market(symbol, side, qty, price)
+            if tr.get("rejected"):
+                self._log(f"[yellow](i) Ordre rejeté {symbol} {side}: {tr.get('reason', 'unknown')}[/]")
+                return tr
             self.db.insert_trade(symbol, side, qty, price, "paper", fee=tr["fee"], pnl=tr["pnl"])
             pnl_str = f" P&L={tr['pnl']:+.2f}" if tr["pnl"] != 0 else ""
             self._log(f"[cyan]{symbol} {side.upper()} {qty} @ ${price:.2f}{pnl_str}[/]")
@@ -351,16 +414,43 @@ class TradingAgent:
             self._log(f"[red]Crypto.com : échec de l'ordre : {e}[/]")
             return {}
 
+    def _is_night_trade(self) -> bool:
+        """Vérifie si on est en période night trade (20h-4h UTC)."""
+        hour = time.gmtime().tm_hour
+        return hour >= 20 or hour < 4
+
     def _position_size(self, symbol: str, price: float, volatility: float, score: float = 0.0) -> float:
         with self._broker_lock:
             equity, _ = self.paper.equity({})
-            open_count = sum(1 for p in self.paper.positions.values() if abs(p.qty) > 0)
-        # Conviction: score 0.05 → 0.5x, score 0.15+ → 1.5x (sizing par signal)
-        conviction = max(0.5, min(1.5, abs(score) / 0.10)) if score else 1.0
-        max_notional = min(equity * 0.80, self.max_position_usd) * conviction
-        vol_factor = min(1.0, 0.05 / max(volatility, 0.01)) if volatility > 0 else 1.0
-        diversification_factor = max(0.3, 1.0 - open_count * 0.25)
-        return max_notional * vol_factor * diversification_factor
+            cash = self.paper.cash
+
+        # Sizing : risque de portefeuille cible = 1% de l'equity
+        # On convertit en notionnel via le stop-loss, borné par max_position_usd et levier implicite.
+        risk_target = max(equity * 0.01, 0.0)
+        stop_dist = price * max(self.stop_loss_pct, 1e-9)
+        if volatility > 0:
+            # Si la volatilité est élevée, on réduit la taille (risque proportionnel à vol)
+            vol_adj = min(1.0, 0.05 / max(volatility, 1e-9))
+            stop_dist = max(stop_dist, price * vol_adj)
+        qty = risk_target / max(stop_dist, 1e-12)
+        max_notional = min(equity * 0.25, self.max_position_usd)
+        notional = min(qty * price, max_notional)
+        # ── Bug 8 corrigé : vérifier que le cash disponible suffit ──
+        # Le notionnel (hors frais) ne doit pas dépasser le cash disponible.
+        # On borne le notionnel au cash pour éviter de dépendre du rejet du PaperBroker.
+        notional = min(notional, max(cash, 0.0))
+        return max(notional, 0.0)
+
+    def _get_spot_price(self, symbol: str) -> float | None:
+        """Tente un prix spot direct depuis Binance, indépendant de l'OHLCV."""
+        try:
+            from ..data import binance_client
+            price = binance_client.price(symbol)
+            if price and float(price) > 0:
+                return float(price)
+        except Exception:
+            pass
+        return None
 
     def _process_symbol(self, symbol: str, marks: dict[str, float], marks_lock: threading.Lock, readonly: bool = False) -> None:
         try:
@@ -372,9 +462,28 @@ class TradingAgent:
             return
         if snap.price <= 0.01:
             return
+        # Utiliser le prix spot Binance si disponible (plus réactif que l'OHLCV)
+        spot = self._get_spot_price(symbol)
+        if spot is not None:
+            price = spot
+        else:
+            price = snap.price
+        # ── Validation anti-prix-aberrant ──
+        # Si le prix chute OU monte de plus de _max_price_drop_pct par rapport au
+        # dernier prix connu, on ignore ce tick (probable donnée corrompue) et on
+        # garde l'ancien prix. Protège contre les faux SL/TP/trailing/buy.
+        prev = self._last_prices.get(symbol)
+        if prev and prev > 0:
+            change = (price - prev) / prev
+            if abs(change) > self._max_price_drop_pct:
+                direction = "hausse" if change > 0 else "chute"
+                self._log(f"[yellow](i) Prix aberrant ignoré {symbol}: {price:.4f} ({direction} de {abs(change)*100:.1f}% vs {prev:.4f})[/]")
+                price = prev
+        self._last_prices[symbol] = price
         with marks_lock:
-            marks[symbol] = snap.price
-        PRICE.labels(symbol=symbol).set(snap.price)
+            marks[symbol] = price
+        PRICE.labels(symbol=symbol).set(price)
+        snap.price = price
         if snap.reddit is not None:
             REDDIT_SENT.labels(symbol=symbol).set(snap.reddit)
         if snap.futures_ls is not None:
@@ -402,61 +511,95 @@ class TradingAgent:
         if pos and abs(pos.qty) > 0:
             entry = pos.avg_price
             abs_qty = abs(pos.qty)
+            # ── Time-based exit : fermer si la position dure trop longtemps ──
+            if symbol in self._entry_time:
+                hold_hours = (time.time() - self._entry_time[symbol]) / 3600
+                if hold_hours >= self.max_hold_hours:
+                    self._log(f"[yellow]Time-based exit {symbol} (hold={hold_hours:.1f}h > {self.max_hold_hours}h)[/]")
+                    close_side = "sell" if pos.side == "buy" else "buy"
+                    self._execute(symbol, close_side, abs_qty, snap.price)
+                    # Nettoyer tous les états associés à la position
+                    self._entry_time.pop(symbol, None)
+                    self._trailing_high.pop(symbol, None)
+                    self._trailing_low.pop(symbol, None)
+                    return
             if pos.side == "buy":
-                # ── Trailing stop dynamique (lock gains progressifs) ──
-                pct_to_tp = (snap.price - entry) / (entry * self.take_profit_pct) if entry > 0 else 0
+                # ── Mettre à jour le high-water mark (plus haut prix atteint) ──
+                prev_high = self._trailing_high.get(symbol, entry)
+                self._trailing_high[symbol] = max(prev_high, snap.price)
+                high = self._trailing_high[symbol]
+                # ── Trailing stop : verrouille 50% des gains si le prix a dépassé 66% du TP ──
+                pct_to_tp = (high - entry) / (entry * self.take_profit_pct) if entry > 0 else 0
                 if pct_to_tp >= 0.66:
-                    trailing_sl = entry + (snap.price - entry) * 0.5  # lock 50% gain
+                    trailing_sl = entry + (high - entry) * 0.5  # lock 50% du gain max
                     if snap.price <= trailing_sl:
-                        self._log(f"[cyan]Trailing-lock50 {symbol} @ ${snap.price:.2f}[/]")
+                        self._log(f"[cyan]Trailing-lock50 {symbol} @ ${snap.price:.2f} (haut={high:.2f})[/]")
                         self._tg.send(f"🔒 Trailing-lock {symbol}\n| Entrée : ${entry:.2f}\n| Sortie : ${snap.price:.2f}")
                         self._execute(symbol, "sell", abs_qty, snap.price)
+                        self._trailing_high.pop(symbol, None)
                         return
+                # ── Breakeven : protège le capital si le prix a dépassé 33% du TP ──
                 elif pct_to_tp >= 0.33:
                     breakeven = entry * 1.002  # couvre frais
                     if snap.price <= breakeven:
                         self._log(f"[cyan]Breakeven {symbol} @ ${snap.price:.2f}[/]")
                         self._execute(symbol, "sell", abs_qty, snap.price)
+                        self._trailing_high.pop(symbol, None)
                         return
+                # ── Stop-loss fixe (protection de base) ──
                 if snap.price <= entry * (1 - self.stop_loss_pct):
                     self._log(f"[yellow]Stop-loss {symbol} @ ${snap.price:.2f}[/]")
                     self._tg.send(f"Stop-loss {symbol}\n| Entrée : ${entry:.2f}\n| Sortie : ${snap.price:.2f} ({((snap.price/entry-1)*100):+.2f}%)")
                     self._execute(symbol, "sell", abs_qty, snap.price)
+                    self._trailing_high.pop(symbol, None)
                     if self.cooldown_after_sl_min > 0:
                         self._sl_cooldown[symbol] = time.time() + self.cooldown_after_sl_min * 60
                     return
+                # ── Take-profit fixe ──
                 elif snap.price >= entry * (1 + self.take_profit_pct):
                     self._log(f"[green]Take-profit {symbol} @ ${snap.price:.2f}[/]")
                     self._tg.send(f"Take-profit {symbol}\n| Entrée : ${entry:.2f}\n| Sortie : ${snap.price:.2f} ({((snap.price/entry-1)*100):+.2f}%)")
                     self._execute(symbol, "sell", abs_qty, snap.price)
+                    self._trailing_high.pop(symbol, None)
                     return
             elif pos.side == "sell":
                 sl_pct = getattr(self, 'short_stop_loss_pct', self.stop_loss_pct)
                 tp_pct = getattr(self, 'short_take_profit_pct', self.take_profit_pct)
-                # ── Trailing stop SHORT (miroir) ──
-                pct_to_tp = (entry - snap.price) / (entry * tp_pct) if entry > 0 else 0
+                # ── Mettre à jour le low-water mark (plus bas prix atteint) ──
+                prev_low = self._trailing_low.get(symbol, entry)
+                self._trailing_low[symbol] = min(prev_low, snap.price)
+                low = self._trailing_low[symbol]
+                # ── Trailing stop SHORT : verrouille 50% des gains si le prix a dépassé 66% du TP ──
+                pct_to_tp = (entry - low) / (entry * tp_pct) if entry > 0 else 0
                 if pct_to_tp >= 0.66:
-                    trailing_sl = entry - (entry - snap.price) * 0.5
+                    trailing_sl = entry - (entry - low) * 0.5  # lock 50% du gain max
                     if snap.price >= trailing_sl:
-                        self._log(f"[cyan]Trailing-lock50 short {symbol} @ ${snap.price:.2f}[/]")
+                        self._log(f"[cyan]Trailing-lock50 short {symbol} @ ${snap.price:.2f} (bas={low:.2f})[/]")
                         self._tg.send(f"🔒 Trailing-lock short {symbol}")
                         self._execute(symbol, "buy", abs_qty, snap.price)
+                        self._trailing_low.pop(symbol, None)
                         return
+                # ── Breakeven SHORT : protège le capital ──
                 elif pct_to_tp >= 0.33:
                     breakeven = entry * 0.998
                     if snap.price >= breakeven:
                         self._log(f"[cyan]Breakeven short {symbol} @ ${snap.price:.2f}[/]")
                         self._execute(symbol, "buy", abs_qty, snap.price)
+                        self._trailing_low.pop(symbol, None)
                         return
+                # ── Stop-loss fixe SHORT ──
                 if snap.price >= entry * (1 + sl_pct):
                     self._log(f"[yellow]Stop-loss short {symbol} @ ${snap.price:.2f}[/]")
                     self._tg.send(f"Stop-loss short {symbol}")
                     self._execute(symbol, "buy", abs_qty, snap.price)
+                    self._trailing_low.pop(symbol, None)
                     return
+                # ── Take-profit fixe SHORT ──
                 elif snap.price <= entry * (1 - tp_pct):
                     self._log(f"[green]Take-profit short {symbol} @ ${snap.price:.2f}[/]")
                     self._tg.send(f"Take-profit short {symbol}")
                     self._execute(symbol, "buy", abs_qty, snap.price)
+                    self._trailing_low.pop(symbol, None)
                     return
         with self._broker_lock:
             eq_now, _ = self.paper.equity(marks)
@@ -471,6 +614,10 @@ class TradingAgent:
                         if p.qty != 0:
                             close_side = "sell" if p.side == "buy" else "buy"
                             self._execute(sym, close_side, abs(p.qty), marks.get(sym, p.avg_price))
+                            # Nettoyer l'état associé à la position fermée
+                            self._entry_time.pop(sym, None)
+                            self._trailing_high.pop(sym, None)
+                            self._trailing_low.pop(sym, None)
             return
         self._stop_triggered = False
 
@@ -479,18 +626,19 @@ class TradingAgent:
         if sig.decision == "LONG":
             if sig.score < threshold_long:
                 return
-            # Vérifier cooldown post stop-loss
             cd = self._sl_cooldown.get(symbol)
             if cd and time.time() < cd:
                 return
+            # Vérification atomique sous RLock (réentrant, compatible avec _execute)
             with self._broker_lock:
                 current_open = sum(1 for p in self.paper.positions.values() if p.qty != 0)
                 if current_open >= self.max_concurrent_positions:
+                    self._log(f"[dim]LONG {symbol} bloqué: max positions ({self.max_concurrent_positions}) atteint[/]")
                     return
-                already_long = (pos := self.paper.positions.get(symbol)) and pos.qty > 0 and pos.side == "buy"
-                if already_long:
+                pos = self.paper.positions.get(symbol)
+                if pos and pos.qty > 0 and pos.side == "buy":
                     return
-            if self.validate_signals:
+            if self.validate_signals and abs(sig.score) < 0.30:
                 fut = self._llm_executor.submit(self.llm.validate, {"score": sig.score, "momentum": sig.momentum, "sentiment": sig.sentiment, "fear_greed": sig.fear_greed}, "buy")
                 try:
                     if not fut.result(timeout=8.0)["approve"]:
@@ -503,17 +651,21 @@ class TradingAgent:
             if qty > 0:
                 self._log(f"[bold green]LONG {symbol} @ ${snap.price:.2f} (qty={qty})[/] mom={sig.momentum:+.3f} score={sig.score:+.3f}")
                 self._execute(symbol, "buy", qty, snap.price)
+                self._entry_time[symbol] = time.time()
+                self._trailing_high[symbol] = snap.price
+                self._trailing_low.pop(symbol, None)
         elif sig.decision == "SHORT":
             if sig.score > self.strategy.cfg.threshold_short:
                 return
             with self._broker_lock:
                 current_open = sum(1 for p in self.paper.positions.values() if p.qty != 0)
                 if current_open >= self.max_concurrent_positions:
+                    self._log(f"[dim]SHORT {symbol} bloqué: max positions ({self.max_concurrent_positions}) atteint[/]")
                     return
-                already_short = (pos := self.paper.positions.get(symbol)) and pos.qty != 0 and pos.side == "sell"
-                if already_short:
+                pos = self.paper.positions.get(symbol)
+                if pos and pos.qty < 0 and pos.side == "sell":
                     return
-            if self.validate_signals:
+            if self.validate_signals and abs(sig.score) < 0.30:
                 fut = self._llm_executor.submit(self.llm.validate, {"score": sig.score, "momentum": sig.momentum, "sentiment": sig.sentiment, "fear_greed": sig.fear_greed}, "sell")
                 try:
                     if not fut.result(timeout=8.0)["approve"]:
@@ -526,6 +678,9 @@ class TradingAgent:
             if qty > 0:
                 self._log(f"[bold red]SHORT {symbol} @ ${snap.price:.2f} (qty={qty})[/]")
                 self._execute(symbol, "sell", qty, snap.price)
+                self._entry_time[symbol] = time.time()
+                self._trailing_low[symbol] = snap.price
+                self._trailing_high.pop(symbol, None)
         elif sig.decision == "FLAT":
             with self._broker_lock:
                 pos = self.paper.positions.get(symbol)
@@ -540,28 +695,9 @@ class TradingAgent:
             if qty > 0:
                 self._log(f"[dim]Fermeture {symbol} ({qty} @ ${avg_price:.2f}) - FLAT[/]")
                 self._execute(symbol, close_side, qty, snap.price)
-
-    def _select_active_universe(self, max_actifs: int = 3) -> list[str]:
-        """Sélectionne dynamiquement les max_actifs aux meilleurs scores SHORT.
-        Garde les positions ouvertes puis ajoute les symboles les plus baissiers
-        (scores négatifs) de toute la watchlist.
-        """
-        with self._broker_lock:
-            open_symbols = {s for s, p in self.paper.positions.items() if p.qty != 0 and s in self.s.universe}
-        # Trier par score des snapshots précédents (les plus négatifs = meilleurs shorts)
-        scored: list[tuple[float, str]] = []
-        for sym in self.s.universe:
-            snap = self._last_snapshots.get(sym, {})
-            score = snap.get("score", 0)
-            scored.append((score if score is not None else 0, sym))
-        scored.sort(key=lambda x: x[0])  # croissant → les plus baissiers en premier
-        selected = list(open_symbols)
-        for score, sym in scored:
-            if sym not in selected:
-                selected.append(sym)
-            if len(selected) >= max_actifs:
-                break
-        return selected[:max_actifs]
+                self._entry_time.pop(symbol, None)
+                self._trailing_high.pop(symbol, None)
+                self._trailing_low.pop(symbol, None)
 
     @LOOP_DURATION.time()
     def step(self) -> None:
@@ -577,49 +713,54 @@ class TradingAgent:
             except Exception:
                 ERRORS.labels(component="step").inc()
 
-        # Étape 2 : trier les 43 par score
-        scored = [(self._last_snapshots.get(sym, {}).get("score") or 0, sym) for sym in self.s.universe]
-        scored.sort(key=lambda x: x[0])  # croissant: les + baissiers en premier
-
         with self._broker_lock:
             open_symbols = {s for s, p in self.paper.positions.items() if p.qty != 0 and s in self.s.universe}
 
-        # Étape 3 : sélectionner les max_concurrent_positions opportunités
-        # Utiliser les seuils de la config (threshold_short pour les shorts, threshold_long pour les longs)
-        sel_short = self.strategy.cfg.threshold_short
-        sel_long = self.strategy.cfg.threshold_long
-        max_active = self.max_concurrent_positions
-        half = max(1, max_active // 2)
-        shorts = [s for s in scored if s[0] < sel_short][:half]
-        longs = [s for s in reversed(scored) if s[0] > sel_long][:half]
-        active = list(open_symbols)
-        # Entrelace SHORT/LONG pour éviter biais directionnel
-        interleaved = []
-        for i in range(max(len(shorts), len(longs))):
-            if i < len(shorts):
-                interleaved.append(shorts[i])
-            if i < len(longs):
-                interleaved.append(longs[i])
-        for score, sym in interleaved:
-            if sym not in active:
-                active.append(sym)
-            if len(active) >= max_active:
-                break
-        active = active[:max_active]
+        # Si le bot est en pause : ne gérer QUE les positions existantes (SL/TP)
+        if self._paused:
+            trade_set = open_symbols
+            if not trade_set:
+                console.log("[dim]⏸️ Bot en pause — aucun trade[/]")
+                return
+        else:
+            # Étape 2 : trier les symboles par score
+            scored = [(self._last_snapshots.get(sym, {}).get("score") or 0, sym) for sym in self.s.universe]
+            scored.sort(key=lambda x: x[0])  # croissant: les + baissiers en premier
 
-        # Afficher les scores TOP/BOTTOM dans la console
-        top5_bear = scored[:3]
-        top5_bull = list(reversed(scored))[:3]
-        log_bear = " | ".join(f"{s.split('-')[0]}({score:+.3f})" for score, s in top5_bear)
-        log_bull = " | ".join(f"{s.split('-')[0]}({score:+.3f})" for score, s in top5_bull)
-        log_sel = " | ".join(s.split('-')[0] for s in active)
-        console.log(f"[dim]Scores: bear=[/][red]{log_bear}[/][dim] bull=[/][green]{log_bull}[/]")
-        console.log(f"[cyan]Selected: {log_sel}[/]")
+            # Étape 3 : sélectionner les max_concurrent_positions opportunités
+            sel_short = self.strategy.cfg.threshold_short
+            sel_long = self.strategy.cfg.threshold_long
+            max_active = self.max_concurrent_positions
+            half = max(1, max_active // 2)
+            shorts = [s for s in scored if s[0] < sel_short][:half]
+            longs = [s for s in reversed(scored) if s[0] > sel_long][:half]
+            active = list(open_symbols)
+            interleaved = []
+            for i in range(max(len(shorts), len(longs))):
+                if i < len(shorts):
+                    interleaved.append(shorts[i])
+                if i < len(longs):
+                    interleaved.append(longs[i])
+            for score, sym in interleaved:
+                if sym not in active:
+                    active.append(sym)
+                if len(active) >= max_active:
+                    break
+            active = active[:max_active]
+
+            # Afficher les scores TOP/BOTTOM dans la console
+            top5_bear = scored[:3]
+            top5_bull = list(reversed(scored))[:3]
+            log_bear = " | ".join(f"{s.split('-')[0]}({score:+.3f})" for score, s in top5_bear)
+            log_bull = " | ".join(f"{s.split('-')[0]}({score:+.3f})" for score, s in top5_bull)
+            log_sel = " | ".join(s.split('-')[0] for s in active)
+            console.log(f"[dim]Scores: bear=[/][red]{log_bear}[/][dim] bull=[/][green]{log_bull}[/]")
+            console.log(f"[cyan]Selected: {log_sel}[/]")
+
+            trade_set = set(active) | open_symbols
 
         # Étape 4 : rescanner les symboles à trader + positions ouvertes (pour SL/TP)
-        # On utilise un nouveau dict pour éviter la data race avec le scan readonly
         trade_marks: dict[str, float] = dict(all_marks)
-        trade_set = set(active) | open_symbols
         trade_futures = {self._snap_executor.submit(self._process_symbol, sym, trade_marks, marks_lock, readonly=False): sym for sym in trade_set}
         if trade_futures:
             done2, _ = wait(list(trade_futures.keys()), timeout=120)
@@ -643,7 +784,7 @@ class TradingAgent:
         TRADES_TOTAL.set(ntrades)
         self.db.record_equity(equity, rpnl, unreal)
         with self._broker_lock:
-            self.db.save_positions(self.paper.positions)
+            self.db.save_positions(self.paper.positions, self._entry_time)
         console.clear()
         console.print(self._build_display())
 
@@ -656,13 +797,20 @@ class TradingAgent:
             if self._tg_notifier.token and self._tg_notifier.chat_id:
                 self._tg.send(f"Agent démarré\n| Mode : {self.mode}\n| Universe : {len(self.s.universe)} actifs\n| Capital initial : ${self.initial_capital:,.0f}\n| Seuil LONG : {self.strategy.cfg.threshold_long:+.3f}\n| Seuil SHORT : {self.strategy.cfg.threshold_short:+.3f}\n| TP : {self.take_profit_pct*100:.0f}% / SL : {self.stop_loss_pct*100:.0f}%\n| Résumé toutes les {self._summary_interval} min")
             while True:
-                self.step()
-                self._step_count += 1
-                if self._step_count % self._summary_steps == 0:
-                    self._send_telegram_summary()
+                try:
+                    self.step()
+                    self._step_count += 1
+                    if self._step_count % self._summary_steps == 0:
+                        self._send_telegram_summary()
+                except Exception as e:
+                    ERRORS.labels(component="step").inc()
+                    self._log(f"[red]Erreur dans step(): {e}[/]")
                 time.sleep(self.s.loop_interval)
         except KeyboardInterrupt:
-            self._tg.send("Agent arrêté (Ctrl+C)")
+            try:
+                self._tg.send("Agent arrêté (Ctrl+C)")
+            except Exception:
+                pass
             self._tg.stop()
             self._tg_notifier.stop()
             self._log("[yellow]Arrêt demandé par l'utilisateur[/]")

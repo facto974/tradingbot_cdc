@@ -97,23 +97,30 @@ class Database:
                 (self._now(), symbol, score, momentum, sentiment, fear_greed, decision),
             )
 
-    def save_positions(self, positions: dict) -> None:
-        """Persiste toutes les positions ouvertes (écrase les anciennes)."""
+    def save_positions(self, positions: dict, entry_times: dict | None = None) -> None:
+        """Persiste toutes les positions ouvertes (écrase les anciennes).
+        entry_times: dict {symbol: timestamp_entrée} pour le time-based exit."""
+        entry_times = entry_times or {}
         with self._conn() as c:
             c.execute("DELETE FROM positions")
             for symbol, pos in positions.items():
                 if pos.qty != 0:
+                    entry_ts = entry_times.get(symbol)
+                    ts = self._now()
+                    if entry_ts:
+                        from datetime import datetime, timezone
+                        ts = datetime.fromtimestamp(entry_ts, tz=timezone.utc).isoformat()
                     c.execute(
                         "INSERT OR REPLACE INTO positions (symbol, side, qty, avg_price, ts)"
                         " VALUES (?,?,?,?,?)",
-                        (symbol, pos.side, pos.qty, pos.avg_price, self._now()),
+                        (symbol, pos.side, pos.qty, pos.avg_price, ts),
                     )
 
     def load_positions(self) -> list[tuple]:
-        """Recharge les positions persistées. Retourne [(symbol, side, qty, avg_price)]. """
+        """Recharge les positions persistées. Retourne [(symbol, side, qty, avg_price, entry_ts)]. """
         with self._conn() as c:
             cur = c.execute(
-                "SELECT symbol, side, qty, avg_price FROM positions WHERE qty != 0"
+                "SELECT symbol, side, qty, avg_price, ts FROM positions WHERE qty != 0"
             )
             return cur.fetchall()
 

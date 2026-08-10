@@ -1,6 +1,7 @@
 """Test script for CryptoComClient – uses CryptoCom REST API correctly."""
 import os
 import sys
+import io
 import json
 import time
 import base64
@@ -8,7 +9,11 @@ import hashlib
 import hmac
 import httpx
 from dotenv import load_dotenv
-load_dotenv()  
+load_dotenv()
+
+# Force UTF-8 sur Windows (évite UnicodeEncodeError cp1252 sur les emojis)
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 from src.broker.cryptocom_client import CryptoComClient
 
@@ -17,8 +22,8 @@ API_SECRET = os.getenv("CRYPTOCOM_API_SECRET", "")
 SANDBOX    = os.getenv("CRYPTOCOM_SANDBOX", "true").lower() == "true"
 
 if not API_KEY or not API_SECRET:
-    print("⚠️  Aucune clé API trouvée dans l'environnement.")
-    print("   Veuillez définir CRYPTOCOM_API_KEY et CRYPTOCOM_API_SECRET dans .env")
+    print("!! Aucune cle API trouvee dans l'environnement.")
+    print("   Veuillez definir CRYPTOCOM_API_KEY et CRYPTOCOM_API_SECRET dans .env")
     sys.exit(1)
 
 client   = CryptoComClient(api_key=API_KEY, api_secret=API_SECRET, sandbox=SANDBOX)

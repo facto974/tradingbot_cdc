@@ -1,75 +1,39 @@
 mode: paper
 exchange: crypto_com
-loop_interval: 60
+loop_interval: 300
 universe:
   - BTC-USD
   - ETH-USD
   - SOL-USD
-  - BNB-USD
-  - XRP-USD
   - DOGE-USD
+  - XRP-USD
   - ADA-USD
-  - AVAX-USD
-  - LINK-USD
-  - SUI-USD
-  - TON-USD
   - DOT-USD
-  - MATIC-USD
-  - TRX-USD
-  - SHIB-USD
-  - LTC-USD
-  - BCH-USD
-  - ATOM-USD
-  - UNI-USD
-  - XLM-USD
-  - VET-USD
-  - ICP-USD
-  - FIL-USD
-  - APT-USD
-  - ARB-USD
-  - OP-USD
-  - NEAR-USD
-  - ALGO-USD
-  - HBAR-USD
-  - EOS-USD
-  - ETC-USD
-  - PEPE-USD
-  - INJ-USD
-  - FET-USD
-  - GRT-USD
-  - RNDR-USD
-  - RUNE-USD
-  - XTZ-USD
-  - ZIL-USD
-  - TIA-USD
-  - WIF-USD
-  - POL-USD
-  - FTM-USD
 
 strategy:
   weights:
-    momentum: 0.65       # 0.70 → 0.65 (légère baisse, momentum reste dominant)
-    sentiment: 0.20      # 0.10 → 0.20 (Reddit/binance plus utilisés)
-    fear_greed: 0.15     # 0.20 → 0.15 ⚡ réduit biais SHORT macro
+    momentum: 0.55
+    sentiment: 0.20
+    fear_greed: 0.25
 
   momentum:
-    lookback_days: 48    # 24 → 48 ⚡ momentum sur 4h (réduit bruit)
-    ema_smooth: 24       # 12 → 24 (smoothing 2h)
-    enable_trend_filter: true   # filtre régime macro
-    sma_fast: 48         # 24 → 48 (4h)
-    sma_slow: 288        # 144 → 288 (24h, cycle journalier complet)
+    lookback_days: 44
+    ema_smooth: 7
+    enable_trend_filter: false
+    sma_fast: 24
+    sma_slow: 96
 
   thresholds:
-    long: 0.05           # inchangé (déjà bas)
-    short: -0.08         # inchangé
-    close_threshold: -0.05         # inchangé
-    close_short_threshold: -0.03   # inchangé
+    long: 0.08
+    short: -0.35
+    close_threshold: -0.05
+    close_short_threshold: -0.15
 
   sentiment:
     high_conviction: false
     min_active_sources: 1
-    require_aligned: true        # exige momentum+sentiment alignés
-    min_momentum_abs: 0.03       # filtre les signaux trop faibles
+    require_aligned: false
+    min_momentum_abs: 0.05
     reddit_subs:
       - CryptoCurrency
       - CryptoMarkets
@@ -79,15 +43,16 @@ strategy:
 risk:
   allow_short: true
   initial_capital: 100
-  max_position_usd: 25            # 80 → 25 ⚡ permet 4 positions simultanées
-  kelly_fraction: 0.3             # 1.0 → 0.3 ⚡ quart-Kelly (variance /3)
-  stop_loss_pct: 0.025            # 0.04 → 0.025 (SL plus serré)
-  take_profit_pct: 0.05           # 0.06 → 0.05 (R:R 1:2)
-  short_stop_loss_pct: 0.025
-  short_take_profit_pct: 0.05
-  max_concurrent_positions: 4     # 2 → 4 ⚡ diversification
-  equity_stop_loss_pct: 0.15
-  cooldown_after_sl_min: 30       # 15 → 30 (évite revenge trading)
+  max_position_usd: 30
+  kelly_fraction: 0.25
+  stop_loss_pct: 0.040
+  take_profit_pct: 0.080
+  short_stop_loss_pct: 0.035
+  short_take_profit_pct: 0.070
+  max_concurrent_positions: 3
+  equity_stop_loss_pct: 0.10
+  cooldown_after_sl_min: 60
+  max_hold_hours: 48
 
 llm:
   validate_signals: false
