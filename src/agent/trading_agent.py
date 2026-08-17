@@ -722,7 +722,10 @@ class TradingAgent:
                 ERRORS.labels(component="step").inc()
 
         with self._broker_lock:
-            open_symbols = {s for s, p in self.paper.positions.items() if p.qty != 0 and s in self.s.universe}
+            # IMPORTANT : inclure TOUTES les positions ouvertes, même si leur
+            # symbole n'est plus dans l'universe (sinon SL/TP/time-based exit
+            # ne se déclenchent jamais → positions orphelines bloquées).
+            open_symbols = {s for s, p in self.paper.positions.items() if p.qty != 0}
 
         # Si le bot est en pause : ne gérer QUE les positions existantes (SL/TP)
         if self._paused:
